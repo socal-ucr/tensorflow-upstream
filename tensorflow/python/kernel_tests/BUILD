@@ -3110,7 +3110,7 @@ cuda_py_test(
 
 cuda_py_test(
     name = "conv_ops_test",
-    size = "large",
+    size = "medium",
     srcs = ["conv_ops_test.py"],
     shard_count = 4,
     tags = [
@@ -3482,7 +3482,7 @@ cuda_py_test(
 
 cuda_py_test(
     name = "conv_ops_3d_test",
-    size = "large",
+    size = "medium",
     srcs = ["conv_ops_3d_test.py"],
     shard_count = 30,
     tags = ["no_cuda11"],
@@ -3496,7 +3496,7 @@ cuda_py_test(
 
 cuda_py_test(
     name = "cwise_ops_test",
-    size = "large",
+    size = "medium",
     srcs = ["cwise_ops_test.py"],
     shard_count = 50,
     tags = [
