@@ -6352,7 +6352,6 @@ filegroup(
         "cwise_op_floor.cc",
         "cwise_op_floor_div.cc",
         "cwise_op_floor_mod.cc",
-        "cwise_op_fma.cc",
         "cwise_op_greater.cc",
         "cwise_op_greater_equal.cc",
         "cwise_op_imag.cc",
@@ -7544,26 +7543,6 @@ tf_kernel_library(
     deps = [
         "//tensorflow/core:framework",
         "@icu//:common",
-    ],
-)
-
-tf_kernel_library(
-    name = "gpu_fusion_ops",
-    prefix = "gpu_fusion_ops",
-    deps = [
-        ":conv_2d",
-        ":conv_ops_gpu_hdrs",
-        ":fill_functor",
-        ":ops_util",
-        ":gpu_util_hdrs",
-        "//tensorflow/core:framework",
-        "//tensorflow/core:framework_internal",
-        "//tensorflow/core:lib",
-        "//tensorflow/core:lib_internal",
-        "//tensorflow/core:nn_ops_op_lib",
-        "//tensorflow/core/framework:bounds_check",
-        "//tensorflow/core/util:image_resizer_state",
-        "//third_party/eigen3",
     ],
 )
 
