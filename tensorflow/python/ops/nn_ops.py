@@ -139,7 +139,6 @@ from __future__ import print_function
 
 import functools
 import numbers
-import os
 
 import numpy as np
 
@@ -161,13 +160,11 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import random_ops
 from tensorflow.python.ops import stateless_random_ops
 from tensorflow.python.ops import variables as variables_lib
-from tensorflow.python.ops import control_flow_util
 # go/tf-wildcard-import
 # pylint: disable=wildcard-import
 from tensorflow.python.ops.gen_nn_ops import *
 # pylint: enable=wildcard-import
 from tensorflow.python.platform import device_context
-from tensorflow.python.platform import build_info
 from tensorflow.python.util import deprecation
 from tensorflow.python.util import dispatch
 from tensorflow.python.util.compat import collections_abc
@@ -3636,6 +3633,7 @@ def relu6(features, name=None):
     features = ops.convert_to_tensor(features, name="features")
     return gen_nn_ops.relu6(features, name=name)
 
+
 @tf_export("nn.leaky_relu")
 @dispatch.add_dispatch_support
 def leaky_relu(features, alpha=0.2, name=None):
@@ -5632,32 +5630,8 @@ def _dropout(x, rate, noise_shape, uniform_sampler, dummy_rng_step, name,
         rate = gen_math_ops.cast(rate, x_dtype, name="rate")
       one_tensor = constant_op.constant(1, dtype=x_dtype)
       ret = gen_math_ops.real_div(x, gen_math_ops.sub(one_tensor, rate))
-    null_noise_shape = (noise_shape == None)
+
     noise_shape = _get_noise_shape(x, noise_shape)
-
-    # Should there be ROCm support, use it. Otherwise fallback to generic
-    # implementation
-    is_in_XLA_context = control_flow_util.GraphOrParentsInXlaContext(
-        ops.get_default_graph())
-    def_dropout = os.environ.get("TF_ROCM_OLD_DROPOUT")
-    if build_info.build_info['is_rocm_build'] and \
-       (x.dtype == dtypes.float64 or x.dtype == dtypes.float32 \
-        or x.dtype == dtypes.float16) and def_dropout != "1" \
-        and not is_in_XLA_context and null_noise_shape:
-      seed = uniform_sampler.keywords['seed']
-      if seed is None:
-        seed1 = 0
-        seed2 = 0
-      else:
-        if type(seed) is int:
-          seed1 = seed
-          seed2 = 0
-        else:
-          seed1 = seed[0]
-          seed2 = seed[1]
-      out, _ = gen_nn_ops.dropout(x, rate, noise_shape=noise_shape, seed1=seed1, seed2=seed2)
-      return out
-
     # Sample a uniform distribution on [0.0, 1.0) and select values larger
     # than or equal to `rate`.
     random_tensor = uniform_sampler(shape=noise_shape, dtype=x_dtype)

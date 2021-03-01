@@ -20,14 +20,11 @@ from __future__ import print_function
 
 import functools
 import math
-import os
-import time
+
 from absl.testing import parameterized
 import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 
-from tensorflow.core.protobuf import config_pb2
-from tensorflow.core.protobuf import rewriter_config_pb2
 from tensorflow.python.eager import def_function
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
@@ -49,7 +46,7 @@ import tensorflow.python.ops.nn_grad  # pylint: disable=unused-import
 from tensorflow.python.ops.nn_impl import _compute_sampled_logits
 from tensorflow.python.ops.ragged import ragged_factory_ops
 from tensorflow.python.platform import test as test_lib
-from tensorflow.python.client import session
+
 
 class ZeroFractionTest(test_lib.TestCase):
 
@@ -344,16 +341,33 @@ DROPOUT_FNS = [
     ("stateless_philox", functools.partial(
         nn_ops.stateless_dropout, seed=(1, 2), rng_alg="philox"))]
 
+  def testDropout(self):
+    # Runs dropout with 0-1 tensor 10 times, sum the number of ones and validate
+    # that it is producing approximately the right number of ones over a large
+    # number of samples, based on the keep probability.
+    x_dim = 40
+    y_dim = 30
+    num_iter = 10
+    for keep_prob in [0.1, 0.5, 0.8]:
+      t = constant_op.constant(1.0, shape=[x_dim, y_dim], dtype=dtypes.float32)
+      dropout = nn_ops.dropout(t, rate=(1 - keep_prob))
+      final_count = 0
+      self.assertEqual([x_dim, y_dim], dropout.get_shape())
+      for _ in xrange(0, num_iter):
+        value = self.evaluate(dropout)
+        final_count += np.count_nonzero(value)
+        # Verifies that there are only two values: 0 and 1/keep_prob.
+        sorted_value = np.unique(np.sort(value))
+        self.assertEqual(0, sorted_value[0])
+        self.assertAllClose(1 / keep_prob, sorted_value[1])
 
-class DropoutTest(test_lib.TestCase, parameterized.TestCase):
+      # Check that we are in the 15% error range
+      expected_count = x_dim * y_dim * keep_prob * num_iter
+      rel_error = math.fabs(final_count - expected_count) / expected_count
+      print(rel_error)
+      self.assertTrue(rel_error < 0.15)
 
-  @parameterized.named_parameters(
-      ("_%s_%s_%s" % (case_name, use_noise_shape, keep_prob), dropout_fn,  # pylint: disable=g-complex-comprehension
-       use_noise_shape, keep_prob)
-      for keep_prob in [0.1, 0.5, 0.8]
-      for use_noise_shape in ["no", "concrete", "partial"]
-      for case_name, dropout_fn in DROPOUT_FNS)
-  def testDropout(self, dropout_fn, use_noise_shape, keep_prob):
+  def testShapedDropout(self):
     # Runs dropout with 0-1 tensor 10 times, sum the number of ones and validate
     # that it is producing approximately the right number of ones over a large
     # number of samples, based on the keep probability.
@@ -1916,62 +1930,6 @@ class RaggedEmbeddingTest(test_lib.TestCase):
           ragged_factory_ops.constant(expected, dtype=float, ragged_rank=1),
           actual)
 
-class BenchmarkDropout(test_lib.Benchmark):
-  def _grappler_all_off_config(self):
-    config = config_pb2.ConfigProto()
-    off = rewriter_config_pb2.RewriterConfig.OFF
-    config.graph_options.optimizer_options.opt_level = -1
-    config.graph_options.rewrite_options.disable_model_pruning = 1
-    config.graph_options.rewrite_options.constant_folding = off
-    config.graph_options.rewrite_options.layout_optimizer = off
-    config.graph_options.rewrite_options.arithmetic_optimization = off
-    config.graph_options.rewrite_options.dependency_optimization = off
-    return config
-  def _run(self, op, feed_dict=None, num_iters=100, name=None, **kwargs):
-    config = self._grappler_all_off_config()
-    with session.Session(config=config) as sess:
-      deltas = []
-      # Warm up the session
-      for _ in range(2):
-        sess.run(op, feed_dict=feed_dict)
-      for _ in range(num_iters):
-        start = time.time()
-        sess.run(op, feed_dict=feed_dict)
-        end = time.time()
-        deltas.append(end - start)
-      mean_time = np.median(deltas)
-      mean_us = mean_time * 1e6
-      # mean_us = (end - start) * 1e6 / num_iters
-      self.report_benchmark(
-          name=name,
-          wall_time=mean_us,
-          extras=kwargs,
-      )
-  def _apply_n_times(self, op, n, x1, *args):
-    for _ in range(n):
-      x1 = op(x1, *args)
-    return x1
-  #@test_util.run_deprecated_v1
-  def benchmarkDropout(self):
-    device = "/gpu:0"
-    n = 1001
-    @def_function.function
-    def test_func(x):
-      return nn_ops.dropout(x, rate=0.1, seed=0)
-    for old in [False]:
-      dt = dtypes.float32
-      m = int(os.environ['DROP_TEST_DIM'])
-      #for dt, m in [(dtypes.float32, 16000), (dtypes.float16, 16000), (dtypes.float16, 16001)]:
-      #for dt, m in [(dtypes.float32, 2000), (dtypes.float16, 2000), (dtypes.float16, 2001)]:
-      #for dt, m in [(dtypes.float16, 16001)]:
-      name = "BenchmarkDropout"+("FP16" if dt == dtypes.float16
-                                 else "FP32")+"_"+str(m)+("_old" if old else "")
-      os.environ['TF_ROCM_OLD_DROPOUT'] = '1' if old else '0'
-      with ops.Graph().as_default():
-        with ops.device(device):
-          x = array_ops.ones([m, n], dtype=dt)
-          self._run(self._apply_n_times(test_func, 1600, x),
-                    name=name, num_iters=400)
 
 class IsotonicTest(parameterized.TestCase, test_lib.TestCase):
 
