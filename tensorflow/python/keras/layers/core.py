@@ -1165,6 +1165,7 @@ class Dense(Layer):
                activity_regularizer=None,
                kernel_constraint=None,
                bias_constraint=None,
+               kernel_preprocess=None,
                **kwargs):
     super(Dense, self).__init__(
         activity_regularizer=activity_regularizer, **kwargs)
@@ -1181,7 +1182,7 @@ class Dense(Layer):
     self.bias_regularizer = regularizers.get(bias_regularizer)
     self.kernel_constraint = constraints.get(kernel_constraint)
     self.bias_constraint = constraints.get(bias_constraint)
-
+    self.kernel_preprocess = kernel_preprocess
     self.input_spec = InputSpec(min_ndim=2)
     self.supports_masking = True
 
@@ -1223,6 +1224,7 @@ class Dense(Layer):
       inputs = math_ops.cast(inputs, dtype=self._compute_dtype_object)
 
     rank = inputs.shape.rank
+    kernel = self.kernel if (self.kernel_preprocess==None) else self.kernel_preprocess(self.kernel)
     if rank == 2 or rank is None:
       # We use embedding_lookup_sparse as a more efficient matmul operation for
       # large sparse input tensors. The op will result in a sparse gradient, as
@@ -1248,10 +1250,10 @@ class Dense(Layer):
         outputs = embedding_ops.embedding_lookup_sparse_v2(
             self.kernel, ids, weights, combiner='sum')
       else:
-        outputs = gen_math_ops.MatMul(a=inputs, b=self.kernel)
+        outputs = gen_math_ops.MatMul(a=inputs, b=kernel)
     # Broadcast kernel to inputs.
     else:
-      outputs = standard_ops.tensordot(inputs, self.kernel, [[rank - 1], [0]])
+      outputs = standard_ops.tensordot(inputs, kernel, [[rank - 1], [0]])
       # Reshape the output back to the original ndim of the input.
       if not context.executing_eagerly():
         shape = inputs.shape.as_list()

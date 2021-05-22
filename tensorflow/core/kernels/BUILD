@@ -4019,6 +4019,7 @@ tf_kernel_library(
 
 tf_kernel_library(
     name = "relu_op",
+    gpu_srcs = ["hip_float8.h"],
     copts = if_mlir_generated_experimental_kernels_enabled(
         ["-DMLIR_GENERATED_EXPERIMENTAL_KERNELS_ENABLED"],
     ) + if_mlir_generated_gpu_kernels_enabled(
@@ -4026,7 +4027,7 @@ tf_kernel_library(
     ),
     prefix = "relu_op",
     deps = NN_DEPS + [
-        "//tensorflow/core/kernels/mlir_generated:relu_op",
+        "//tensorflow/core/kernels/mlir_generated:relu_op", 
     ],
 )
 

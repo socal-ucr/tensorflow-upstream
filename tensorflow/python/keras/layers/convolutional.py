@@ -126,6 +126,7 @@ class Conv(Layer):
                trainable=True,
                name=None,
                conv_op=None,
+               kernel_preprocess=None,
                **kwargs):
     super(Conv, self).__init__(
         trainable=trainable,
@@ -159,6 +160,7 @@ class Conv(Layer):
     self.kernel_constraint = constraints.get(kernel_constraint)
     self.bias_constraint = constraints.get(bias_constraint)
     self.input_spec = InputSpec(min_ndim=self.rank + 2)
+    self.kernel_preprocess = kernel_preprocess
 
     self._validate_init()
     self._is_causal = self.padding == 'causal'
@@ -250,7 +252,11 @@ class Conv(Layer):
     if self._is_causal:  # Apply causal padding to inputs for Conv1D.
       inputs = array_ops.pad(inputs, self._compute_causal_padding(inputs))
 
-    outputs = self._convolution_op(inputs, self.kernel)
+    if self.kernel_preprocess != None:
+      kernel = self.kernel_preprocess(self.kernel)
+    else:
+      kernel = self.kernel
+    outputs = self._convolution_op(inputs, kernel)
 
     if self.use_bias:
       output_rank = outputs.shape.rank
@@ -660,6 +666,7 @@ class Conv2D(Conv):
                activity_regularizer=None,
                kernel_constraint=None,
                bias_constraint=None,
+               kernel_preprocess=None,
                **kwargs):
     super(Conv2D, self).__init__(
         rank=2,
@@ -679,6 +686,7 @@ class Conv2D(Conv):
         activity_regularizer=regularizers.get(activity_regularizer),
         kernel_constraint=constraints.get(kernel_constraint),
         bias_constraint=constraints.get(bias_constraint),
+        kernel_preprocess=kernel_preprocess,
         **kwargs)
 
 

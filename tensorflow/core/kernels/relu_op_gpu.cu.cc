@@ -20,6 +20,7 @@ limitations under the License.
 #include <stdio.h>
 
 #include <type_traits>
+#include <atomic>
 
 #include "third_party/eigen3/Eigen/Core"
 #include "tensorflow/core/framework/register_types.h"
@@ -27,6 +28,12 @@ limitations under the License.
 #include "tensorflow/core/kernels/relu_op_functor.h"
 #include "tensorflow/core/util/gpu_kernel_helper.h"
 #include "tensorflow/core/util/gpu_launch_config.h"
+
+#include <hip/hip_bfloat16.h>
+
+#include "hip_float8.h"
+
+#include <random>
 
 #if TENSORFLOW_USE_ROCM
 #include "rocm/include/hip/hip_fp16.h"
@@ -357,167 +364,90 @@ __global__ void doFrequencies_kernel(const T* _in, int* out, int32 count)
     atomicAdd(out+i, part_counts[i]);
 }
 
-
 template <typename T, int we, int wm>
 __global__ void Quant8FwdKernel(const T* _in,
-                                T* _out, int32 count, int exp_low_cutoff, bool stoch) {
+                                T* _out, int32 count, int exp_low_cutoff, bool stoch, uint32_t seed) {
   int i = threadIdx.x + blockIdx.x * blockDim.x;
   if (i >= count) return;
   typedef typename std::conditional<sizeof(T)==2, uint16_t, uint32_t>::type IT;
+  typedef typename std::conditional<sizeof(T)==2, __half, float>::type FT;
   const IT* in = (const IT*) _in;
-  IT* out = (IT*)_out;
-
+  const FT* fin = (const FT*) _in;
+  //IT* out = (IT*)_out;
+  FT* fout = (FT*)_out;
   IT x = in[i];
 
-  const int mfmt = (sizeof(T)==4) ? 23 : 10;
-
-  IT y, head, mantissa, exponent;
-
-  uint32_t round_mask = ((1 << wm) - 1) << (mfmt-wm);
-  uint32_t nextbit = 1<<(mfmt-wm-1);
-  uint32_t drop_mask =  (1 << (mfmt-wm)) - 1; //((1<<mfmt)-1)^round_mask;
-  uint32_t drop_width = mfmt-wm;
-  IT sign;
-
-  if(sizeof(T)==4) {
-    head = x & 0xFF800000;
-    mantissa = x & 0x7FFFFF;
-    exponent = (head>>23) & 0xFF;
-    sign = head & 0x80000000;
-  } else {
-    head = x & 0xFC00;
-    mantissa = x & 0x3FF;
-    exponent = (head>>10) & 0x1F;
-    sign = head & 0x8000;
+  uint16_t y;
+  if(!stoch)
+    y = hip_f8_impl::cast_to_f8x<wm,we,FT,false,true>(fin[i]);
+  else {
+    uint32_t drop_bits = uint32_t(x) & 0xFFFFu;
+    if(sizeof(x)==4)
+      drop_bits ^= x>>16;
+    drop_bits = ((drop_bits & 31)<<11) | (drop_bits>>5);
+    drop_bits *= 0x7000149;
+    uint32_t rng = (drop_bits ^ 0x13371337 ^ (i*229791) ^ seed);
+    y = hip_f8_impl::cast_to_f8x<wm,we,FT,false,true,true>(fin[i], rng);
   }
-
-    uint32_t drop_bits = drop_mask & mantissa;
-    drop_bits = ((drop_bits & 15)<<(drop_width-4)) | (drop_bits>>4);
-    uint32_t rng; 
-    if(stoch)
-      rng = (drop_bits ^ 0x13371337 ^ (i*229)) & drop_mask;
-    else
-      rng = 0;
-
-  int new_exponent = 0, new_mantissa = 0;
-  bool reduce_range = (we<(sizeof(T)==4 ? 8 : 5));
-/*
-  representation ::
-
-  0   subnormal
-  1   cutoff
-  2   cutoff+1
-...
-  15  cutoff+14
-
-*/
-
-  // below normal range
-    if(reduce_range && exponent<exp_low_cutoff) {
-      if(x==0) {
-        out[i] = 0;
-        return;
-      }
-      else {
-        // subnormal range; represented by a subnormal float8 (exponent 0)
-        // and involves loss of accuracy
-          mantissa += 1<<mfmt;
-          mantissa >>= exp_low_cutoff-exponent;
-          y = mantissa;// + (1<<(mfmt+exponent-exp_low_cutoff));
-          y += stoch ? rng : (mantissa & nextbit);
-          //y &= ~drop_mask;
-          y >>= (mfmt-wm);
-          if(y < (1<<wm)) {
-            new_exponent = 0;
-            new_mantissa = y;
-          } else {
-            new_exponent = 1;
-            new_mantissa = 0;
-          }
-//          out[i] = y | head;
-//          return;
-      }
-//      return;
-    }
-    // above range: quantize to maximum possible float of the same sign
-    //   (technically, we're quantizing to 1 above that)
-    else if(reduce_range && exponent>=exp_low_cutoff+(1<<we)-1) {
-      //out[i] = sign  | ((exp_low_cutoff+(1<<we))<<mfmt);
-      new_mantissa = (1<<wm)-1;
-      new_exponent = (1<<we)-1;
-//      return;
-    }
-    else {
-      y = mantissa + (1<<mfmt) + (stoch ? rng : (mantissa & nextbit));
-      y &= ~drop_mask;
-      new_mantissa = y >> (mfmt-wm);
-      new_exponent = exponent;
-      if(reduce_range)
-          new_exponent -=  exp_low_cutoff-1;
-      if(new_mantissa >= (2<<wm))  {
-         if(new_exponent == ((1<<we)-1)) {
-           new_mantissa = (1<<wm)-1;
-           new_exponent = (1<<we)-1;
-         } else {
-           y >>= 1;
-           new_exponent++;
-         }
-     }
-     new_mantissa &= (1<<wm)-1;
-    }
-
-    if(new_exponent == 0 && new_mantissa == 0) {
-        out[i] = 0;
-    } 
-    else if(reduce_range && new_exponent == 0) {
-        int sh = 1 + __clz(new_mantissa) - (32-wm);
-        new_mantissa <<= sh;
-        new_exponent += exp_low_cutoff - sh;
-        new_mantissa &= (1<<wm)-1;
-    } else {
-        if(reduce_range)
-          new_exponent += exp_low_cutoff-1;
-    }
-    out[i] = sign | (new_exponent << mfmt) | (new_mantissa << (mfmt-wm));
-//  out[i] = y | head;
 }
-/*
-template <int we, int wm>
-__global__ void Quant8FwdKernel(const Eigen::half* _in,
-                                    Eigen::half* _out, int32 count, int exp_low_cutoff, bool stoch) {
+
+template <typename T>
+__global__ void Quant8FwdKernel_52(const T* _in,
+                                T* _out, int32 count, int exp_low_cutoff, bool stoch, uint32_t seed) {
   int i = threadIdx.x + blockIdx.x * blockDim.x;
   if (i >= count) return;
-  const uint16_t* in = (const uint16_t*) _in;
-  uint16_t* out = (uint16_t*) _out;
-  uint16_t x = in[i];
+  typedef typename std::conditional<sizeof(T)==2, uint16_t, uint32_t>::type IT;
+  typedef typename std::conditional<sizeof(T)==2, __half, float>::type FT;
+  const IT* in = (const IT*) _in;
+  const FT* fin = (const FT*) _in;
+  FT* fout = (FT*)_out;
+  IT x = in[i];
+  const int we=5, wm=2;
 
-
-  uint16_t head = x & 0xFC00;
-  uint16_t mantissa = x & 0x3FF;
-  uint16_t exponent = (head>>10) & 0x1F;
-  if(we<5) {
-    // below range: quantize to 0
-    if(exponent<exp_low_cutoff) {
-      out[i] = 0;
-      return;
-    }
-    // above range: quantize to maximum possible float of the same sign
-    if(exponent>=exp_low_cutoff+(1<<we)) {
-      out[i] = (head & 0x8000) | ((exp_low_cutoff+(1<<we))<<10);
-      return;
-    }
+  uint8_t y;
+  if(!stoch)
+    y = hip_f8_impl::cast_to_f8<wm,we,FT,false,true>(fin[i]);
+  else {
+    uint32_t drop_bits = uint32_t(x) & 0xFFFFu;
+    if(sizeof(x)==4)
+      drop_bits ^= x>>16;
+    drop_bits = ((drop_bits & 31)<<11) | (drop_bits>>5);
+    drop_bits *= 0x7000149;
+    uint32_t rng = (drop_bits ^ 0x13371337 ^ (i*229791) ^ seed);
+    y = hip_f8_impl::cast_to_f8<wm,we,FT,false,true,true>(fin[i], rng);
   }
-  uint16_t round_mask = ((1 << wm) - 1) << (10-wm);
-  uint16_t y = mantissa & round_mask;
-  if(!stoch) {
-    uint16_t nextbit = 1<<(10-wm-1);
-    if(y!=round_mask && (mantissa & nextbit))
-      y+=nextbit;
-  } else {
-  }
-  out[i] = y | head;
+  fout[i] = hip_f8_impl::cast_from_f8<wm,we,FT,false>(y);
 }
-*/
+
+template <typename T>
+__global__ void Quant8FwdKernel_43(const T* _in,
+                                T* _out, int32 count, int exp_low_cutoff, bool stoch, uint32_t seed) {
+  int i = threadIdx.x + blockIdx.x * blockDim.x;
+  if (i >= count) return;
+  typedef typename std::conditional<sizeof(T)==2, uint16_t, uint32_t>::type IT;
+  typedef typename std::conditional<sizeof(T)==2, __half, float>::type FT;
+  const IT* in = (const IT*) _in;
+  const FT* fin = (const FT*) _in;
+  FT* fout = (FT*)_out;
+  IT x = in[i];
+  const int we=4, wm=3;
+
+  uint8_t y;
+  if(!stoch)
+    y = hip_f8_impl::cast_to_f8<wm,we,FT,false,true>(fin[i]);
+  else {
+    uint32_t drop_bits = uint32_t(x) & 0xFFFFu;
+    if(sizeof(x)==4)
+      drop_bits ^= x>>16;
+    drop_bits = ((drop_bits & 31)<<11) | (drop_bits>>5);
+    drop_bits += i;
+    drop_bits *= 0x7000149;
+    uint32_t rng = (drop_bits ^ 0x13371337 ^ (i*229791) ^ seed);
+    y = hip_f8_impl::cast_to_f8<wm,we,FT,false,true,true>(fin[i], rng);
+  }
+  fout[i] = hip_f8_impl::cast_from_f8<wm,we,FT,false>(y);
+}
+
 template <typename T>
 __global__ void Quant8BwdKernel(const T* _in, T* _out, int32 count) {
   int i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -525,113 +455,13 @@ __global__ void Quant8BwdKernel(const T* _in, T* _out, int32 count) {
   _out[i] = _in[i];
 }
 
-
-/*
-template <typename Device>
-struct Quant8Fwd<Device, Eigen::half> {
-  void operator()(const Device& d, typename TTypes<Eigen::half>::ConstTensor input,
-                  typename TTypes<Eigen::half>::Tensor output, int W1, int W2, bool stoch) {
-    int32 count = input.size();
-    if (count == 0) return;
-    constexpr int32 kThreadInBlock = 256;
-//    hipStreamSynchronize(d.stream());
-    const Eigen::half* pIn = input.data();
-    Eigen::half* pOut = output.data();
-
-    constexpr int exp_width = W1;
-    constexpr int mant_width = W2;
-    int exp_low_cutoff = 0;
-
-    if(exp_width < 5) {
-      int* freq = 0;
-      hipMalloc(&freq, 32*4);
-      hipMemsetAsync(freq, 0, 32*4, d.stream());
-      int host_freq[32];
-      GpuLaunchKernel(
-          doFrequencies_kernel<Eigen::half>, min(32, (count + 256 - 1) / 256), 256,
-          0, d.stream(), pIn, freq, count);
-      hipMemcpyAsync(host_freq, freq, 32*4, hipMemcpyDeviceToHost);
-      hipStreamSynchronize(d.stream());
-//      for(int i=0; i<32; i++)
-//        printf("%d  %d\n", i, host_freq[i]);
-//      printf("\n\n");
-      int max_count=0;
-      for(int i=1; i<31-(1<<exp_width); i++) {
-         int s=0;
-         for(int j=0; j<(1<<exp_width); j++)
-           s+=host_freq[i+j];
-         if(s>max_count) {
-           max_count=s;
-           exp_low_cutoff=i;
-         }
-      }
-      hipFree(freq);
-    }
-//    float oldval = (float)pIn[100];
-    TF_CHECK_OK(GpuLaunchKernel(
-        Quant8FwdKernel_half<exp_width,mant_width>, (count + kThreadInBlock - 1) / kThreadInBlock,
-        kThreadInBlock, 0, d.stream(), pIn, pOut, count, exp_low_cutoff));
-//    hipStreamSynchronize(d.stream());
-//    float newval = (float)pOut[100];
-//    printf("%f -> %f\n", oldval, newval);
-  }
-};
-
-template <typename Device>
-struct Quant8Fwd<Device, float> {
-  void operator()(const Device& d, typename TTypes<float>::ConstTensor input,
-                  typename TTypes<float>::Tensor output, int W1, int W2, bool stoch) {
-    int32 count = input.size();
-    if (count == 0) return;
-    constexpr int32 kThreadInBlock = 256;
-    static int warn_count=0;
-    warn_count++;
-    if(warn_count<10)
-      printf("WARNING: calling QuantFwd<float>\n");
-    const float* pIn = input.data();
-    float* pOut = output.data();
-
-    constexpr int exp_width = W1;
-    constexpr int mant_width = W2;
-    int exp_low_cutoff = 0;
-
-    if(exp_width < 8) {
-      int* freq = 0;
-      hipMalloc(&freq, 256*4);
-      hipMemsetAsync(freq, 0, 256*4, d.stream());
-      int host_freq[256];
-      GpuLaunchKernel(
-          doFrequencies_kernel<float>, min(256, (count + 256 - 1) / 256), 256,
-          0, d.stream(), pIn, freq, count);
-      hipMemcpyAsync(host_freq, freq, 256*4, hipMemcpyDeviceToHost);
-      hipStreamSynchronize(d.stream());
-      int max_count=0;
-      for(int i=1; i<256-(1<<exp_width); i++) {
-         int s=0;
-         for(int j=0; j<(1<<exp_width); j++)
-           s+=host_freq[i+j];
-         if(s>max_count) {
-           max_count=s;
-           exp_low_cutoff=i;
-         }
-      }
-      hipFree(freq);
-    }
-
-    TF_CHECK_OK(GpuLaunchKernel(
-        Quant8FwdKernel_float<W1,W2>, (count + kThreadInBlock - 1) / kThreadInBlock,
-        kThreadInBlock, 0, d.stream(), input.data(), output.data(), count, exp_low_cutoff));
-  }
-};
-*/
-
 template <typename T>
 struct Quant8Fwd<GPUDevice, T> {
   void operator()(const GPUDevice& d, typename TTypes<T>::ConstTensor input,
                   typename TTypes<T>::Tensor output, int W1, int W2, bool stoch, bool dynamic) {
     int32 count = input.size();
     if (count == 0) return;
-    constexpr int32 kThreadInBlock = 256;
+     constexpr int32 kThreadInBlock = 256;
     if(std::is_same<T,float>::value) {
       static int warn_count=0;
       warn_count++;
@@ -646,62 +476,7 @@ struct Quant8Fwd<GPUDevice, T> {
 
     constexpr int logEmax = (sizeof(T)==4) ? 8 : 5;
     constexpr int Emax = 1<<logEmax;
-    // with float,5:
-    // optimal cutoff is typically 113 or 114 for activations,
-    //  108 or 109 for weights
     int exp_low_cutoff = (Emax/2) - (1<<(exp_width-1)) + 1;
-
-    if(dynamic && exp_width < logEmax) {
-      exp_low_cutoff = 0;
-      int* freq = 0;
-      hipMalloc(&freq, Emax*4);
-      hipMemsetAsync(freq, 0, Emax*4, d.stream());
-      int host_freq[256];
-      // each wavefront (64 threads) should process at most 64K points:
-      // at most 256k points/block
-      GpuLaunchKernel(
-          doFrequencies_kernel<T>, max(count/262144+1, min(64, (count + 256 - 1) / 256)), 256,
-          0, d.stream(), pIn, freq, count);
-      hipMemcpyAsync(host_freq, freq, Emax*4, hipMemcpyDeviceToHost);
-      hipStreamSynchronize(d.stream());
-      int run_count=0;
-      int sum=0;
-      for(int i=0; i<Emax; i++)
-         sum+=host_freq[i];
-      for(int i=0; i<(1<<exp_width); i++)
-         run_count+=host_freq[i];
-      int max_count=run_count;
-      for(int i=1; i<=Emax-(1<<exp_width); i++) {
-         run_count+=host_freq[i+(1<<exp_width)-1];
-         run_count-=host_freq[i];
-         if(run_count>max_count) {
-           max_count=run_count;
-           exp_low_cutoff=i;
-         }
-       }
-/*
-       static int dist[256];
-       static int call_count=0;
-       dist[exp_low_cutoff]++;
-call_count++;
-if(!(call_count % 100)) {
-for(int i=0; i<256; i++)
-  if(dist[i]>0)
-    printf("%d %d\n", i, dist[i]);
-}
-
-       if(max_count<sum-(sum>>8)) {
-         printf("WARNING: %d/%d exponents out of range\n", sum-max_count, sum);
-         for(int i=0; i<Emax; i++) {
-            printf("%d ", host_freq[i]);
-            if((i&15)==15)
-              printf("\n");
-          }
-          printf("%d @ %d\n", max_count, exp_low_cutoff);
-        }
-*/
-      hipFree(freq);
-    }
     auto op = Quant8FwdKernel<T,5,3>;
     if(W1==4) {
       if(W2==1)
@@ -713,7 +488,7 @@ for(int i=0; i<256; i++)
       else
         printf("ERROR: bad W1,W2 values\n"); //shouldn't happen, should be tested up the stack
     }
-    else if(W1==5) {
+    else if(W1==5 || (W1==8 && sizeof(T)==2)) {
       if(W2==1)
         op=Quant8FwdKernel<T,5,1>;
       else if(W2==2)
@@ -767,8 +542,6 @@ struct Quant8Bwd<Device, float> {
         kThreadInBlock, 0, d.stream(), input.data(), output.data(), count));
   }
 };
-
-
 
 }  // namespace functor
 
