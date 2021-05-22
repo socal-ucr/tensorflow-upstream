@@ -76,6 +76,18 @@ TF_CALL_REAL_NUMBER_TYPES(REGISTER_RELU_KERNELS);
 
 // Elu and Selu only make sense with float or double.
 TF_CALL_FLOAT_TYPES(REGISTER_ELU_KERNELS);
+
+#define REGISTER_KERNEL_Q8(T) \
+REGISTER_KERNEL_BUILDER(                                                  \
+   Name("Quant8Fwd").Device(DEVICE_CPU).TypeConstraint<T>("T"), \
+      Quant8FwdOp<CPUDevice, T>);  \
+REGISTER_KERNEL_BUILDER(                                                  \
+   Name("Quant8Bwd").Device(DEVICE_CPU).TypeConstraint<T>("T"), \
+      Quant8BwdOp<CPUDevice, T>);
+
+REGISTER_KERNEL_Q8(float);
+REGISTER_KERNEL_Q8(Eigen::half);
+
 #undef REGISTER_ELU_KERNELS
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -174,7 +186,21 @@ namespace functor {
       const GPUDevice& d, typename TTypes<T>::ConstTensor gradients,           \
       typename TTypes<T>::ConstTensor activations,                             \
       typename TTypes<T>::Tensor backprops);                                   \
-  extern template struct SeluGrad<GPUDevice, T>;
+  extern template struct SeluGrad<GPUDevice, T>;    
+
+#define DECLARE_QUANT8(T) \
+template <>                                         \
+void Quant8Fwd<GPUDevice, T>::operator()(           \
+  const GPUDevice& d,                               \
+  typename TTypes<T>::ConstTensor features,         \
+ typename TTypes<T>::Tensor activations, int, int, bool, bool);           \
+ extern template struct Quant8Fwd<GPUDevice, T>;    \
+template <>                                         \
+void Quant8Bwd<GPUDevice, T>::operator()(           \
+  const GPUDevice& d,                               \
+  typename TTypes<T>::ConstTensor features,         \
+ typename TTypes<T>::Tensor activations);           \
+ extern template struct Quant8Bwd<GPUDevice, T>;
 
 template <>
 void Relu<GPUDevice, qint8>::operator()(
@@ -183,6 +209,9 @@ void Relu<GPUDevice, qint8>::operator()(
 extern template struct Relu<GPUDevice, qint8>;
 
 TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_SPEC);
+DECLARE_QUANT8(float);
+DECLARE_QUANT8(Eigen::half);
+
 }  // namespace functor
 
 // Registration of the GPU implementations.
@@ -222,6 +251,19 @@ TF_CALL_GPU_NUMBER_TYPES(DECLARE_GPU_SPEC);
       SeluGradOp<GPUDevice, type>)
 
 TF_CALL_GPU_NUMBER_TYPES(REGISTER_GPU_KERNELS);
+
+#define REGISTER_KERNEL_Q8(T) \
+REGISTER_KERNEL_BUILDER(                                                  \
+   Name("Quant8Fwd").Device(DEVICE_GPU).TypeConstraint<T>("T"), \
+      Quant8FwdOp<GPUDevice, T>);  \
+REGISTER_KERNEL_BUILDER(                                                  \
+   Name("Quant8Bwd").Device(DEVICE_GPU).TypeConstraint<T>("T"), \
+      Quant8BwdOp<GPUDevice, T>);
+
+REGISTER_KERNEL_Q8(float);
+REGISTER_KERNEL_Q8(Eigen::half);
+
+
 #undef REGISTER_GPU_KERNELS
 
 template <typename Device>

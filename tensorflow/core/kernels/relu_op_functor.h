@@ -268,6 +268,23 @@ struct GeluGrad {
   }
 };
 
+template <typename Device, typename T>
+struct Quant8Fwd {
+  void operator()(const Device& d, typename TTypes<T>::ConstTensor features,
+                  typename TTypes<T>::Tensor activations, int W1, int W2, bool stoch, bool dynamic) {
+//    activations.device(d) = features;
+  }
+};
+
+template <typename Device, typename T>
+struct Quant8Bwd {
+  void operator()(const Device& d, typename TTypes<T>::ConstTensor features,
+                  typename TTypes<T>::Tensor activations) {
+//    activations.device(d) = features;
+  }
+};
+
+
 }  // namespace functor
 }  // namespace tensorflow
 

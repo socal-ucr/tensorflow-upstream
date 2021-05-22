@@ -247,6 +247,59 @@ class GeluOp : public UnaryElementWiseOp<T, GeluOp<Device, T>> {
 };
 
 template <typename Device, typename T>
+class Quant8FwdOp : public UnaryElementWiseOp<T, Quant8FwdOp<Device, T>> {
+    int W1, W2;
+    bool stoch, dynamic;
+ public:
+  using UnaryElementWiseOp<T, Quant8FwdOp<Device, T>>::UnaryElementWiseOp;
+
+  explicit Quant8FwdOp(OpKernelConstruction* context)
+      : UnaryElementWiseOp<T, Quant8FwdOp<Device, T>>(context) {
+    OP_REQUIRES_OK(context, context->GetAttr("exp", &W1));
+    OP_REQUIRES_OK(context, context->GetAttr("mant", &W2));
+    OP_REQUIRES_OK(context, context->GetAttr("stoch", &stoch));
+    OP_REQUIRES_OK(context, context->GetAttr("stoch", &stoch));
+    OP_REQUIRES_OK(context, context->GetAttr("dynamic", &dynamic));
+    OP_REQUIRES(context, W1==4 || W1==5 || W1==8,
+                errors::InvalidArgument("Valid exp attributes for Quant8FwdOp are 4,5,8"));
+    OP_REQUIRES(context, W2==1 || W2==2 || W2==3,
+                errors::InvalidArgument("Valid mant attributes for Quant8FwdOp are 1,2,3"));
+  }
+
+  void Operate(OpKernelContext* context, const Tensor& input, Tensor* output) {
+    functor::Quant8Fwd<Device, T> functor;
+    functor(context->eigen_device<Device>(), input.flat<T>(),
+            output->flat<T>(), W1, W2, stoch, dynamic);
+  }
+};
+
+template <typename Device, typename T>
+class Quant8BwdOp : public UnaryElementWiseOp<T, Quant8BwdOp<Device, T>> {
+    int W1, W2;
+    bool stoch, dynamic;
+ public:
+  using UnaryElementWiseOp<T, Quant8BwdOp<Device, T>>::UnaryElementWiseOp;
+
+  explicit Quant8BwdOp(OpKernelConstruction* context)
+      : UnaryElementWiseOp<T, Quant8BwdOp<Device, T>>(context) {
+    OP_REQUIRES_OK(context, context->GetAttr("exp", &W1));
+    OP_REQUIRES_OK(context, context->GetAttr("mant", &W2));
+    OP_REQUIRES_OK(context, context->GetAttr("stoch", &stoch));
+    OP_REQUIRES_OK(context, context->GetAttr("dynamic", &dynamic));
+    OP_REQUIRES(context, W1==4 || W1==5 || W1==8,
+                errors::InvalidArgument("Valid exp attributes for Quant8FwdOp are 4,5,8"));
+    OP_REQUIRES(context, W2==1 || W2==2 || W2==3,
+                errors::InvalidArgument("Valid mant attributes for Quant8FwdOp are 1,2,3"));
+  }
+
+  void Operate(OpKernelContext* context, const Tensor& input, Tensor* output) {
+    functor::Quant8Bwd<Device, T> functor;
+    functor(context->eigen_device<Device>(), input.flat<T>(),
+            output->flat<T>());
+  }
+};
+
+template <typename Device, typename T>
 class GeluGradOp : public BinaryElementWiseOp<T, GeluGradOp<Device, T>> {
  public:
   using BinaryElementWiseOp<T, GeluGradOp<Device, T>>::BinaryElementWiseOp;

@@ -1199,6 +1199,26 @@ REGISTER_OP("Gelu")
     .Attr("T: {half, bfloat16, float, double}")
     .SetShapeFn(shape_inference::UnchangedShape);
 
+REGISTER_OP("Quant8Fwd")
+    .Input("features: T")
+    .Output("activations: T")
+    .Attr("T: {half, float}")
+    .Attr("exp: int")
+    .Attr("mant: int")
+    .Attr("stoch: bool")
+    .Attr("dynamic: bool = true")
+    .SetShapeFn(shape_inference::UnchangedShape);
+
+REGISTER_OP("Quant8Bwd")
+    .Input("features: T")
+    .Output("activations: T")
+    .Attr("T: {half, float}")
+    .Attr("exp: int")
+    .Attr("mant: int")
+    .Attr("stoch: bool")
+    .Attr("dynamic: bool = true")
+    .SetShapeFn(shape_inference::UnchangedShape);
+
 REGISTER_OP("GeluGrad")
     .Input("gradients: T")
     .Input("outputs: T")

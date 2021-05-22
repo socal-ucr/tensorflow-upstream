@@ -468,6 +468,15 @@ def _SeluGrad(op, grad):
 def _GeluGrad(op, grad):
   return gen_nn_ops.gelu_grad(grad, op.inputs[0])
 
+@ops.RegisterGradient("Quant8Fwd")
+def _Quant8FwdGrad(op, grad):
+  return grad
+
+@ops.RegisterGradient("Quant8Bwd")
+def _Quant8BwdGrad(op, grad):
+  return gen_nn_ops.quant8_fwd(grad, mant=op.get_attr("mant"),
+             exp=op.get_attr("exp"), stoch=op.get_attr("stoch"), 
+             dynamic=op.get_attr("dynamic"))
 
 @ops.RegisterGradient("Softplus")
 def _SoftplusGrad(op, grad):

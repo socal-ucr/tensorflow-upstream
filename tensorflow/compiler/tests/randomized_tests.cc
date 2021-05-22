@@ -1477,6 +1477,7 @@ TEST_F(OpTest, Conj) {
   });
 }
 
+#if !TENSORFLOW_USE_ROCM
 TEST_F(OpTest, FFT) {
   Repeatedly([this]() {
     std::vector<int64> dims = RandomDims(1, kDefaultMaxRank);
@@ -1591,6 +1592,7 @@ TEST_F(OpTest, IRFFT3D) {
                                              .Input(fft_shape));
   });
 }
+#endif
 
 TEST_F(OpTest, Conv2D) {
   Repeatedly([this]() {
@@ -1976,6 +1978,24 @@ TEST_F(OpTest, SeluGrad) {
                                              .Attr("T", DT_FLOAT));
   });
 }
+
+TEST_F(OpTest, Gelu) {
+  Repeatedly([this]() {
+    return ExpectTfAndXlaOutputsAreClose(
+        OpTestBuilder("Gelu").RandomInput(DT_FLOAT).Attr("T", DT_FLOAT));
+  });
+}
+
+TEST_F(OpTest, GeluGrad) {
+  Repeatedly([this]() {
+    auto dims = RandomDims();
+    return ExpectTfAndXlaOutputsAreClose(OpTestBuilder("GeluGrad")
+                                             .RandomInput(DT_FLOAT, dims)
+                                             .RandomInput(DT_FLOAT, dims)
+                                             .Attr("T", DT_FLOAT));
+  });
+}
+
 
 TEST_F(OpTest, Equal) {
   Repeatedly([this]() {

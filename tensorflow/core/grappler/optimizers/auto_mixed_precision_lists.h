@@ -130,6 +130,8 @@ class AutoMixedPrecisionListsCuda : public AutoMixedPrecisionLists {
         "LSTMBlockCell",
         "LSTMBlockCellGrad",
         "MatMul",
+        "Quant8Fwd",
+        "Quant8Bwd",
     };
 #if TENSORFLOW_USE_ROCM
     if (true) {
@@ -190,6 +192,8 @@ class AutoMixedPrecisionListsCuda : public AutoMixedPrecisionLists {
         "FusedBatchNormV3",
         "FusedBatchNormGradV3",
         "_FusedBatchNormEx",
+        "Gelu",
+        "GeluGrad",
         "Inv",
         "LeakyRelu",
         "LeakyReluGrad",
@@ -200,6 +204,8 @@ class AutoMixedPrecisionListsCuda : public AutoMixedPrecisionLists {
         "Prod",
         "RealDiv",
         "Reciprocal",
+        "Rsqrt",
+        "RsqrtGrad",
         "Selu",
         "SeluGrad",
         "Sigmoid",

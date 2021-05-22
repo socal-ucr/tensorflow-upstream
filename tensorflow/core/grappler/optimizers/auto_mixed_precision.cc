@@ -1299,6 +1299,7 @@ Status AutoMixedPrecisionImpl::Optimize() {
     bool should_process;
     switch (mode_) {
       case AutoMixedPrecisionMode::CUDA:
+        VLOG(2) << node.op() << " " << !MustPreserve(node)  << " " << IsOnDevice(node, DEVICE_GPU) << " " << (ShouldIgnorePerformance() || IsOnSuitableGPUArch(node));
         should_process =
             !MustPreserve(node) && IsOnDevice(node, DEVICE_GPU) &&
             (ShouldIgnorePerformance() || IsOnSuitableGPUArch(node));

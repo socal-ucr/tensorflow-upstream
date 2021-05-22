@@ -301,4 +301,22 @@ Status BiasAddGrad(const AttrSlice& attrs, FunctionDef* g) {
 }
 REGISTER_OP_GRADIENT("BiasAdd", BiasAddGrad);
 
+
+Status Quant8FwdGrad(const AttrSlice& attrs, FunctionDef* g) {
+  // clang-format off
+  *g = FDH::Define(
+    // Arg defs
+    {"input: T", "grad: T"},
+    // Ret val defs
+    {"grad: T"},
+    // Attr defs
+    {{"T: {half, float}"},
+     GetConvnetDataFormatAttrString()},
+    // Nodes
+    {
+    });
+  // clang-format on
+  return Status::OK();
+}
+REGISTER_OP_GRADIENT("Quant8Fwd", Quant8FwdGrad);
 }  // end namespace tensorflow
