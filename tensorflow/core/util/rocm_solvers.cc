@@ -110,6 +110,22 @@ ROCmSolver::~ROCmSolver() {
   }
 }
 
+template <typename Scalar>
+ScratchSpace<Scalar> ROCmSolver::GetScratchSpace(const TensorShape& shape,
+                                                 const std::string& debug_info,
+                                                 bool on_host) {
+  ScratchSpace<Scalar> new_scratch_space(context_, shape, debug_info, on_host);
+  scratch_tensor_refs_.emplace_back(new_scratch_space.tensor());
+  return std::move(new_scratch_space);
+}
+
+template <typename Scalar>
+ScratchSpace<Scalar> ROCmSolver::GetScratchSpace(int64 size,
+                                                 const std::string& debug_info,
+                                                 bool on_host) {
+  return GetScratchSpace<Scalar>(TensorShape({size}), debug_info, on_host);
+}
+
 #define TF_RETURN_IF_ROCBLAS_ERROR(expr)                                  \
   do {                                                                    \
     auto status = (expr);                                                 \
