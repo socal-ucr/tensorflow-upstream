@@ -177,6 +177,7 @@ TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
 
 TF_CALL_LAPACK_TYPES(GETRF_BATCHED_INSTANCE); 
 
+/*
 template <typename Scalar, typename SolverFnT>
 static inline Status GetrsBatchedImpl(SolverFnT solver, OpKernelContext* context, 
                                       rocblas_handle rocsolver_handle, 
@@ -191,6 +192,7 @@ static inline Status GetrsBatchedImpl(SolverFnT solver, OpKernelContext* context
                                     lda, dev_pivots, stride, B, ldb, batch_size));
   return Status::OK(); 
 }
+*/
 
 #define GETRS_BATCHED_INSTANCE(Scalar, type_prefix)                           \
   template <>                                                                 \
