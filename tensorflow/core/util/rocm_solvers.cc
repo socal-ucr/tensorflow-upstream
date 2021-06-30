@@ -166,7 +166,7 @@ TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
 #define GETRF_BATCHED_INSTANCE(Scalar, type_prefix)                        \
   template <>                                                              \
   Status ROCmSolver::getrf_batched<Scalar>(                                \
-                                   int m, int n, Scalar* A, int lda,       \
+                                   int m, int n, Scalar** A, int lda,       \
                                    int* dev_pivots, rocblas_stride stride, \
                                    int* info, const int batch_size) {      \
     mutex_lock lock(handle_map_mutex);                                     \
@@ -183,8 +183,8 @@ TF_CALL_LAPACK_TYPES(GETRF_BATCHED_INSTANCE);
 #define GETRS_BATCHED_INSTANCE(Scalar, type_prefix)                           \
   template <>                                                                 \
   Status ROCmSolver::getrs_batched<Scalar>(                                   \
-      const rocblas_operation trans, int n, int nrhs, Scalar* A, int lda,     \
-      int* dev_pivots, rocblas_stride stride, Scalar* B, const int ldb,       \
+      const rocblas_operation trans, int n, int nrhs, Scalar** A, int lda,    \
+      int* dev_pivots, rocblas_stride stride, Scalar** B, const int ldb,      \
       const int batch_size) {                                                 \
     mutex_lock lock(handle_map_mutex);                                        \
     using ROCmScalar = typename ROCmComplexT<Scalar>::type;                   \

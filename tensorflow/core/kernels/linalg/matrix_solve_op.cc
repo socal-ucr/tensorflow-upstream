@@ -467,11 +467,11 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
     if (use_batched_solver) {
       // For small matrices or large batch sizes, we use the batched interface
       // from hipBLAS.
-      Scalar* input_copy_ptrs_base =
-          reinterpret_cast<Scalar*>(input_copy_ptrs.mutable_data());
-/*      for (int batch = 0; batch < batch_size; ++batch) {
+      Scalar** input_copy_ptrs_base =
+          reinterpret_cast<Scalar**>(input_copy_ptrs.mutable_data());
+      for (int batch = 0; batch < batch_size; ++batch) {
         input_copy_ptrs_base[batch] = &input_copy_reshaped(batch, 0, 0);
-      }*/
+      }
       OP_REQUIRES_OK_ASYNC(
           context,
           solver->getrf_batched<Scalar>(n, n, input_copy_ptrs_base, n, pivots_mat.data(),
@@ -528,15 +528,15 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
     auto transposed_rhs_reshaped =
         transposed_rhs.template flat_inner_dims<Scalar, 3>();
     if (use_batched_solver) {
-      Scalar* input_copy_ptrs_base =
-          reinterpret_cast<Scalar*>(input_copy_ptr_array.mutable_data());
-      Scalar* transposed_rhs_ptrs_base =
-          reinterpret_cast<Scalar*>(
+      Scalar** input_copy_ptrs_base =
+          reinterpret_cast<Scalar**>(input_copy_ptr_array.mutable_data());
+      Scalar** transposed_rhs_ptrs_base =
+          reinterpret_cast<Scalar**>(
               transposed_rhs_ptr_array.mutable_data());
-/*      for (int batch = 0; batch < batch_size; ++batch) {
+      for (int batch = 0; batch < batch_size; ++batch) {
         input_copy_ptrs_base[batch] = &input_copy_reshaped(batch, 0, 0);
         transposed_rhs_ptrs_base[batch] = &transposed_rhs_reshaped(batch, 0, 0);
-      }*/ 
+      } 
       int host_info = 0;
       OP_REQUIRES_OK_ASYNC(
           context,

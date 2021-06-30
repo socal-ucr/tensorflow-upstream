@@ -109,13 +109,13 @@ class ROCmSolver {
 
   template <typename Scalar>
   Status
-  getrf_batched(int m, int n, Scalar* dev_A, int lda, int* dev_pivots,
+  getrf_batched(int m, int n, Scalar** dev_A, int lda, int* dev_pivots,
                 rocblas_stride stride, int* info, const int batch_count);
 
   template <typename Scalar>
   Status getrs_batched(const rocblas_operation trans, int n, int nrhs,
-                       Scalar* A, int lda, int* dev_pivots,
-                       rocblas_stride stride, Scalar* B, const int ldb,
+                       Scalar** A, int lda, int* dev_pivots,
+                       rocblas_stride stride, Scalar** B, const int ldb,
                        const int batch_count);
 
   template <typename Scalar>
