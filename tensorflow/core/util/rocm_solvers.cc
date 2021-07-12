@@ -43,6 +43,7 @@ namespace {
 using stream_executor::gpu::GpuExecutor;
 using stream_executor::gpu::ScopedActivateExecutorContext;
 
+
 inline bool CopyHostToDevice(OpKernelContext* context, void* dst,
                              const void* src, uint64 bytes) {
   auto stream = context->op_device_context()->stream();
@@ -178,6 +179,13 @@ TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
                                    int* info, const int batch_size) {         \
     mutex_lock lock(handle_map_mutex);                                        \
     using ROCmScalar = typename ROCmComplexT<Scalar>::type;                   \
+    ScratchSpace<uint8> dev_info =                                            \
+        this->GetScratchSpace<uint8>(sizeof(int*)*batch)size, "",             \
+        /*on host*/ false);                                                   \
+    if (!CopyHostToDevice(context_, dev_info.mutable_data(), info,            \
+                          dev_info.bytes())) {                                \
+      return errors::Internal("GetrfBatched: Failed to copy ptrs to device"); \
+    }                                                                         \
     ScratchSpace<uint8> dev_a =                                               \
         this->GetScratchSpace<uint8>(sizeof(ROCmScalar*) * batch_size, "",    \
         /*on host */ false);                                                  \
@@ -188,7 +196,7 @@ TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
     TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrf_batched, type_prefix)(         \
         rocm_blas_handle_, m, n,                                              \
         reinterpret_cast<ROCmScalar**>(dev_a.mutable_data()), lda,            \
-        dev_pivots, stride, info, batch_size));                               \
+        dev_pivots, stride, dev_info, batch_size));                           \
     return Status::OK();                                                      \
   }
 
