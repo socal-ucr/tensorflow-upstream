@@ -179,12 +179,12 @@ TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
                                    int* info, const int batch_size) {         \
     mutex_lock lock(handle_map_mutex);                                        \
     using ROCmScalar = typename ROCmComplexT<Scalar>::type;                   \
-    ScratchSpace<uint8> dev_info =                                            \
-        this->GetScratchSpace<uint8>(sizeof(int*)*batch_size, "",             \
+    ScratchSpace<int> dev_info =                                              \
+        this->GetScratchSpace<int>(sizeof(int*)*batch_size, "",               \
         /*on host*/ false);                                                   \
     if (!CopyHostToDevice(context_, dev_info.mutable_data(), info,            \
                           dev_info.bytes())) {                                \
-      return errors::Internal("GetrfBatched: Failed to copy ptrs to device"); \
+      return errors::Internal("GetrfBatched: Failed to allocated info");      \
     }                                                                         \
     ScratchSpace<uint8> dev_a =                                               \
         this->GetScratchSpace<uint8>(sizeof(ROCmScalar*) * batch_size, "",    \
