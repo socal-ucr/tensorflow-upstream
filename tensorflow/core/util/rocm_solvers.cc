@@ -186,7 +186,8 @@ TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
       return errors::Internal("GetrfBatched: Failed to copy ptrs to device"); \
     }                                                                         \
     TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrf_batched, type_prefix)(         \
-        rocm_blas_handle_, m, n, reinterpret_cast<ROCmScalar**>(dev_a), lda,  \
+        rocm_blas_handle_, m, n,                                              \
+        reinterpret_cast<ROCmScalar**>(dev_a.mutable_data()), lda,            \
         dev_pivots, stride, info, batch_size));                               \
     return Status::OK();                                                      \
   }
@@ -217,8 +218,10 @@ TF_CALL_LAPACK_TYPES(GETRF_BATCHED_INSTANCE);
       return errors::Internal("GetrfBatched: Failed to copy ptrs to device");     \
     }                                                                             \
     TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrs_batched, type_prefix)(             \
-        rocm_blas_handle_, trans, n, nrhs, reinterpret_cast<ROCmScalar**>(dev_a), \
-        lda, dev_pivots, stride, reinterpret_cast<ROCmScalar**>(dev_b), ldb,      \
+        rocm_blas_handle_, trans, n, nrhs,                                        \
+        reinterpret_cast<ROCmScalar**>(dev_a.mutable_data()),                     \
+        lda, dev_pivots, stride,                                                  \
+        reinterpret_cast<ROCmScalar**>(dev_b.mutable_data()), ldb,                \
         batch_size));                                                             \
     return Status::OK();                                                          \
   }
