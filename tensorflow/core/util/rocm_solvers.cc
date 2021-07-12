@@ -147,15 +147,8 @@ ROCmSolver::~ROCmSolver() {
     mutex_lock lock(handle_map_mutex);                                        \
     int info = 0;                                                             \
     using ROCmScalar = typename ROCmComplexT<Scalar>::type;                   \
-    ScratchSpace<uint8> dev_A =                                               \
-        this->GetScratchSpace<uint8>(sizeof(ROCmScalar*) * batch_size, "",    \
-        /*on host */ false);                                                  \
-    if (!CopyHostToDevice(context_, dev_A.mutable_data(), A,                  \
-                          dev_A.bytes())) {                                   \
-      return errors::Internal("GetrfBatched: Failed to copy ptrs to device"); \
-    }                                                                         \
     TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrf, type_prefix)(                 \
-        rocm_blas_handle_, m, n, reinterpret_cast<ROCmScalar*>(dev_A), lda,   \
+        rocm_blas_handle_, m, n, reinterpret_cast<ROCmScalar*>(A), lda,       \
         dev_pivots, &info));                                                  \
     return Status::OK();                                                      \
   }
