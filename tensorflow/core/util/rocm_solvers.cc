@@ -43,6 +43,13 @@ namespace {
 using stream_executor::gpu::GpuExecutor;
 using stream_executor::gpu::ScopedActivateExecutorContext;
 
+inline bool CopyHostToDevice(OpKernelContext* context, void* dst,
+                             const void* src, uint64 bytes) {
+  auto stream = context->op_device_context()->stream();
+  se::DeviceMemoryBase wrapped_dst(dst);
+  return stream->ThenMemcpy(&wrapped_dst, src, bytes).ok();
+}
+
 struct ROCmSolverHandles {
   explicit ROCmSolverHandles(GpuExecutor* parent, hipStream_t stream) {
     parent_ = parent;
@@ -133,17 +140,24 @@ ROCmSolver::~ROCmSolver() {
 #define SOLVER_FN(method, type_prefix) \
   wrap::rocsolver##_##type_prefix##method
 
-#define GETRF_INSTANCE(Scalar, type_prefix)                                 \
-  template <>                                                               \
-  Status ROCmSolver::getrf<Scalar>(int m, int n, Scalar* dev_A, int lda,    \
-                                   int* dev_pivots) {                       \
-    mutex_lock lock(handle_map_mutex);                                      \
-    int info = 0;                                                           \
-    using ROCmScalar = typename ROCmComplexT<Scalar>::type;                 \
-    TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrf, type_prefix)(               \
-        rocm_blas_handle_, m, n, reinterpret_cast<ROCmScalar*>(dev_A), lda, \
-        dev_pivots, &info));                                                \
-    return Status::OK();                                                    \
+#define GETRF_INSTANCE(Scalar, type_prefix)                                   \
+  template <>                                                                 \
+  Status ROCmSolver::getrf<Scalar>(int m, int n, Scalar* A, int lda,          \
+                                   int* dev_pivots) {                         \
+    mutex_lock lock(handle_map_mutex);                                        \
+    int info = 0;                                                             \
+    using ROCmScalar = typename ROCmComplexT<Scalar>::type;                   \
+    ScratchSpace<uint8> dev_A =                                               \
+        this->GetScratchSpace<uint8>(sizeof(ROCmScalar*) * batch_size, "",    \
+        /*on host */ false);                                                  \
+    if (!CopyHostToDevice(context_, dev_A.mutable_data(), A,                  \
+                          dev_A.bytes())) {                                   \
+      return errors::Internal("GetrfBatched: Failed to copy ptrs to device"); \
+    }                                                                         \
+    TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrf, type_prefix)(                 \
+        rocm_blas_handle_, m, n, reinterpret_cast<ROCmScalar*>(dev_A), lda,   \
+        dev_pivots, &info));                                                  \
+    return Status::OK();                                                      \
   }
 
 TF_CALL_LAPACK_TYPES(GETRF_INSTANCE);
@@ -163,36 +177,57 @@ TF_CALL_LAPACK_TYPES(GETRF_INSTANCE);
 
 TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
 
-#define GETRF_BATCHED_INSTANCE(Scalar, type_prefix)                        \
-  template <>                                                              \
-  Status ROCmSolver::getrf_batched<Scalar>(                                \
-                                   int m, int n, Scalar** A, int lda,       \
-                                   int* dev_pivots, rocblas_stride stride, \
-                                   int* info, const int batch_size) {      \
-    mutex_lock lock(handle_map_mutex);                                     \
-    using ROCmScalar = typename ROCmComplexT<Scalar>::type;                \
-    TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrf_batched, type_prefix)(      \
-        rocm_blas_handle_, m, n, reinterpret_cast<ROCmScalar**>(A), lda,   \
-        dev_pivots, stride, info, batch_size));                            \
-    return Status::OK();                                                   \
+#define GETRF_BATCHED_INSTANCE(Scalar, type_prefix)                           \
+  template <>                                                                 \
+  Status ROCmSolver::getrf_batched<Scalar>(                                   \
+                                   int m, int n, Scalar** A, int lda,         \
+                                   int* dev_pivots, rocblas_stride stride,    \
+                                   int* info, const int batch_size) {         \
+    mutex_lock lock(handle_map_mutex);                                        \
+    using ROCmScalar = typename ROCmComplexT<Scalar>::type;                   \
+    ScratchSpace<uint8> dev_a =                                               \
+        this->GetScratchSpace<uint8>(sizeof(ROCmScalar*) * batch_size, "",    \
+        /*on host */ false);                                                  \
+    if (!CopyHostToDevice(context_, dev_a.mutable_data(), A,                  \
+                          dev_a.bytes())) {                                   \
+      return errors::Internal("GetrfBatched: Failed to copy ptrs to device"); \
+    }                                                                         \
+    TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrf_batched, type_prefix)(         \
+        rocm_blas_handle_, m, n, reinterpret_cast<ROCmScalar**>(dev_a), lda,  \
+        dev_pivots, stride, info, batch_size));                               \
+    return Status::OK();                                                      \
   }
 
 TF_CALL_LAPACK_TYPES(GETRF_BATCHED_INSTANCE); 
 
 
-#define GETRS_BATCHED_INSTANCE(Scalar, type_prefix)                           \
-  template <>                                                                 \
-  Status ROCmSolver::getrs_batched<Scalar>(                                   \
-      const rocblas_operation trans, int n, int nrhs, Scalar** A, int lda,    \
-      int* dev_pivots, rocblas_stride stride, Scalar** B, const int ldb,      \
-      const int batch_size) {                                                 \
-    mutex_lock lock(handle_map_mutex);                                        \
-    using ROCmScalar = typename ROCmComplexT<Scalar>::type;                   \
-    TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrs_batched, type_prefix)(         \
-        rocm_blas_handle_, trans, n, nrhs, reinterpret_cast<ROCmScalar**>(A), \
-        lda, dev_pivots, stride, reinterpret_cast<ROCmScalar**>(B), ldb,      \
-        batch_size));                                                         \
-    return Status::OK();                                                      \
+#define GETRS_BATCHED_INSTANCE(Scalar, type_prefix)                               \
+  template <>                                                                     \
+  Status ROCmSolver::getrs_batched<Scalar>(                                       \
+      const rocblas_operation trans, int n, int nrhs, Scalar** A, int lda,        \
+      int* dev_pivots, rocblas_stride stride, Scalar** B, const int ldb,          \
+      const int batch_size) {                                                     \
+    mutex_lock lock(handle_map_mutex);                                            \
+    using ROCmScalar = typename ROCmComplexT<Scalar>::type;                       \
+    ScratchSpace<uint8> dev_a =                                                   \
+        this->GetScratchSpace<uint8>(sizeof(ROCmScalar*) * batch_size, "",        \
+        /*on host */ false);                                                      \
+    if (!CopyHostToDevice(context_, dev_a.mutable_data(), A,                      \
+                          dev_a.bytes())) {                                       \
+      return errors::Internal("GetrfBatched: Failed to copy ptrs to device");     \
+    }                                                                             \
+    ScratchSpace<uint8> dev_b =                                                   \
+        this->GetScratchSpace<uint8>(sizeof(ROCmScalar*) * batch_size, "",        \
+        /*on host */ false);                                                      \
+    if (!CopyHostToDevice(context_, dev_b.mutable_data(), B,                      \
+                          dev_b.bytes())) {                                       \
+      return errors::Internal("GetrfBatched: Failed to copy ptrs to device");     \
+    }                                                                             \
+    TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrs_batched, type_prefix)(             \
+        rocm_blas_handle_, trans, n, nrhs, reinterpret_cast<ROCmScalar**>(dev_a), \
+        lda, dev_pivots, stride, reinterpret_cast<ROCmScalar**>(dev_b), ldb,      \
+        batch_size));                                                             \
+    return Status::OK();                                                          \
   }
 
 TF_CALL_LAPACK_TYPES(GETRS_BATCHED_INSTANCE);
