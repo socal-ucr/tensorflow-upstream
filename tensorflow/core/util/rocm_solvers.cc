@@ -196,7 +196,7 @@ TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
     TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrf_batched, type_prefix)(         \
         rocm_blas_handle_, m, n,                                              \
         reinterpret_cast<ROCmScalar**>(dev_a.mutable_data()), lda,            \
-        dev_pivots, stride, dev_info, batch_size));                           \
+        dev_pivots, stride, dev_info.mutable_data(), batch_size));            \
     return Status::OK();                                                      \
   }
 
