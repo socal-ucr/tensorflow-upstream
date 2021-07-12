@@ -180,7 +180,7 @@ TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
     mutex_lock lock(handle_map_mutex);                                        \
     using ROCmScalar = typename ROCmComplexT<Scalar>::type;                   \
     ScratchSpace<uint8> dev_info =                                            \
-        this->GetScratchSpace<uint8>(sizeof(int*)*batch)size, "",             \
+        this->GetScratchSpace<uint8>(sizeof(int*)*batch_size, "",             \
         /*on host*/ false);                                                   \
     if (!CopyHostToDevice(context_, dev_info.mutable_data(), info,            \
                           dev_info.bytes())) {                                \
