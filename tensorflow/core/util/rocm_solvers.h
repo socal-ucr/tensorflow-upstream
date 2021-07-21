@@ -98,8 +98,8 @@ class ROCmSolver {
  
   static void CheckLapackInfoAndDeleteSolverAsync(
     std::unique_ptr<ROCmSolver> solver,
-    conststd::vector<DeviceLapackInfo>& dev_lapack_info,
-    AsyncOpKernel::DoneCallBack done); 
+    const std::vector<DeviceLapackInfo>& dev_lapack_info,
+    AsyncOpKernel::DoneCallback done); 
   
   OpKernelContext* context() { return context_; }
 
