@@ -454,14 +454,14 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
                                        TensorShape{batch_size, n}, &pivots),
         done);
     auto pivots_mat = pivots.template matrix<int>();
-    int info; 
     // 1. Compute the partially pivoted LU factorization(s) of the
     // matrix/matrices.
-//    std::vector<DeviceLapackInfo> dev_info;
+    std::vector<DeviceLapackInfo> dev_info;
     auto input_copy_ptrs = solver->GetScratchSpace<uint8>(
         sizeof(Scalar*) * batch_size, "input_copt_ptrs",
         /* on_host */ true);
     const int kMaxMatrixSizeToBatchSizeRatio = 128;
+    int *info = new int[batch_size]; 
     const bool use_batched_solver =
         n <= kMaxMatrixSizeToBatchSizeRatio * batch_size;
     if (use_batched_solver) {
@@ -472,20 +472,22 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
       for (int batch = 0; batch < batch_size; ++batch) {
         input_copy_ptrs_base[batch] = &input_copy_reshaped(batch, 0, 0);
       }
+      dev_info.push_back(
+          solver->GetDeviceLapackInfo(batch_size, "getrfBatched"));
       OP_REQUIRES_OK_ASYNC(
           context,
           solver->getrf_batched<Scalar>(n, n, input_copy_ptrs_base, n, pivots_mat.data(),
-                                        n, &info, batch_size),
+                                        n, &dev_info.back(), batch_size),
           done);
     } else {
       // For small batch sizes or large matrices, we use the non-batched
       // interface from ROCmSolver, which is much faster for large matrices.
-      // dev_info.push_back(solver->GetDeviceLapackInfo(batch_size, "getrf"));
+      dev_info.push_back(solver->GetDeviceLapackInfo(batch_size, "getrf"));
       for (int batch = 0; batch < batch_size; ++batch) {
         OP_REQUIRES_OK_ASYNC(
             context,
             solver->getrf(n, n, &input_copy_reshaped(batch, 0, 0), n,
-                          &pivots_mat(batch, 0)),
+                          &pivots_mat(batch, 0), &dev_info.back(batch)),
             done);
       }
     }
@@ -553,6 +555,7 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
                                   "an illegal value."),
           done);
     } else {
+      dev_info.push_back(solver->GetDeviceLapackInfo(batch_size, "getrs"));
       for (int batch = 0; batch < batch_size; ++batch) {
         OP_REQUIRES_OK_ASYNC(
             context,
@@ -575,6 +578,27 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
                     transposed_rhs.flat<Scalar>().data(),
                     transposed_rhs.NumElements() * sizeof(Scalar));
     }
+    // Callback for checking info after kernels finish. Also capture the
+    // temporary Tensors/ScratchSpace so they don't get deallocated before the
+    // kernels run. TODO(rmlarsen): Use move capture once C++14 becomes
+    // available.
+    auto info_checker = [context, done, dev_info](
+                            const Status& status,
+                            const std::vector<HostLapackInfo>& host_infos) {
+      if (!status.ok() && errors::IsInvalidArgument(status) &&
+          !host_infos.empty()) {
+        for (int i = 0; i < host_infos[0].size(); ++i) {
+          // Match the CPU error message for singular matrices. Otherwise
+          // just print the original error message from the status below.
+          OP_REQUIRES_ASYNC(context, host_infos[0].data()[i] <= 0,
+                            errors::InvalidArgument(kErrMsg), done);
+        }
+      }
+      OP_REQUIRES_OK_ASYNC(context, status, done);
+      done();
+    };
+    ROCmSolver::CheckLapackInfoAndDeleteSolverAsync(std::move(solver), dev_info,
+                                                    std::move(info_checker));
   }
 
  private:

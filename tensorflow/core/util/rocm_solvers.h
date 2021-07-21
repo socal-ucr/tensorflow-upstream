@@ -62,6 +62,16 @@ inline typename ROCmComplexT<T>::type* ROCmComplex(T* p) {
   return reinterpret_cast<typename ROCmComplexT<T>::type*>(p);
 }
 
+// Container of LAPACK info data (an array of int) generated on-device by
+// a CudaSolver call. One or more such objects can be passed to
+// CudaSolver::CopyLapackInfoToHostAsync() along with a callback to
+// check the LAPACK info data after the corresponding kernels
+// finish and LAPACK info has been copied from the device to the host.
+class DeviceLapackInfo;
+
+// Host-side copy of LAPACK info.
+class HostLapackInfo;
+
 template <typename Scalar>
 class ScratchSpace;
 
@@ -80,6 +90,17 @@ class ROCmSolver {
       gtl::ArraySlice<int> candidate_input_indices, DataType type,
       const TensorShape& shape, Tensor* input_alias_or_new_scoped_tensor);
 
+  static void CheckLapackInfoAndDeleteSolverAsync(
+    std::unique_ptr<ROCmSolver> solver, 
+    const std::vector<DeviceLapackInfo>& dev_lapack_info, 
+    std::function<void(const Status&, const std::vector<HostLapackInfo>&)>
+    info_checker_callback);  
+ 
+  static void CheckLapackInfoAndDeleteSolverAsync(
+    std::unique_ptr<ROCmSolver> solver,
+    conststd::vector<DeviceLapackInfo>& dev_lapack_info,
+    AsyncOpKernel::DoneCallBack done); 
+  
   OpKernelContext* context() { return context_; }
 
   template <typename Scalar>
@@ -100,7 +121,7 @@ class ROCmSolver {
   // LU factorization.
   // Computes LU factorization with partial pivoting P * A = L * U.
   template <typename Scalar>
-  Status getrf(int m, int n, Scalar* dev_A, int lda, int* dev_pivots);
+  Status getrf(int m, int n, Scalar* dev_A, int lda, int* dev_pivots int* info);
 
   // Uses LU factorization to solve A * X = B.
   template <typename Scalar>
@@ -110,7 +131,7 @@ class ROCmSolver {
   template <typename Scalar>
   Status
   getrf_batched(int m, int n, Scalar** dev_A, int lda, int* dev_pivots,
-                rocblas_stride stride, int* info, const int batch_count);
+                rocblas_stride stride, DevLapackInfo* info, const int batch_count);
 
   template <typename Scalar>
   Status getrs_batched(const rocblas_operation trans, int n, int nrhs,
@@ -192,6 +213,36 @@ class ScratchSpace {
   Tensor scratch_tensor_;
 };
 
+class HostLapackInfo : public ScratchSpace<int> {
+ public:
+  HostLapackInfo(OpKernelContext* context, int64 size,
+                 const std::string& debug_info)
+      : ScratchSpace<int>(context, size, debug_info, /* on_host */ true) {}
+};
+
+class DeviceLapackInfo : public ScratchSpace<int> {
+ public:
+  DeviceLapackInfo(OpKernelContext* context, int64 size,
+                   const std::string& debug_info)
+      : ScratchSpace<int>(context, size, debug_info, /* on_host */ false) {}
+
+  // Allocates a new scratch space on the host and launches a copy of the
+  // contents of *this to the new scratch space. Sets success to true if
+  // the copy kernel was launched successfully.
+  HostLapackInfo CopyToHost(bool* success) const {
+    CHECK(success != nullptr);
+    HostLapackInfo copy(context(), size(), debug_info());
+    auto stream = context()->op_device_context()->stream();
+    se::DeviceMemoryBase wrapped_src(
+        static_cast<void*>(const_cast<int*>(this->data())));
+    *success =
+        stream->ThenMemcpy(copy.mutable_data(), wrapped_src, this->bytes())
+            .ok();
+    return copy;
+  }
+};
+
+
 template <typename Scalar>
 ScratchSpace<Scalar> ROCmSolver::GetScratchSpace(const TensorShape& shape,
                                                  const std::string& debug_info,
@@ -206,6 +257,13 @@ ScratchSpace<Scalar> ROCmSolver::GetScratchSpace(int64 size,
                                                  const std::string& debug_info,
                                                  bool on_host) {
   return GetScratchSpace<Scalar>(TensorShape({size}), debug_info, on_host);
+}
+
+inline DeviceLapackInfo ROCmSolver::GetDeviceLapackInfo(
+    int64 size, const std::string& debug_info) {
+  DeviceLapackInfo new_dev_info(context_, size, debug_info);
+  scratch_tensor_refs_.emplace_back(new_dev_info.tensor());
+  return new_dev_info;
 }
 
 }  // namespace tensorflow

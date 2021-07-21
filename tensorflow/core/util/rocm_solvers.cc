@@ -67,7 +67,7 @@ struct ROCmSolverHandles {
     ScopedActivateExecutorContext sac{parent_};
     CHECK(wrap::rocblas_destroy_handle(rocm_blas_handle) ==
           rocblas_status_success)
-        << "Failed to destroy cuBlas instance.";
+        << "Failed to destroy RocBlas instance.";
   }
   GpuExecutor* parent_;
   rocblas_handle rocm_blas_handle;
@@ -118,6 +118,97 @@ ROCmSolver::~ROCmSolver() {
   }
 }
 
+// Static 
+void ROCmSolver::CheckLapackInfoAndDeleteSolverAsync(
+    std::unique_ptr<ROCmSolver> solver,
+    const std::vector<DeviceLapackInfo>& dev_lapack_infos,
+    std::function<void(const Status&, const std::vector<HostLapackInfo>&)>
+        info_checker_callback) {
+    CHECK(info_checker_callback != nullptr);
+    std::vector<HostLapackInfo> host_lapack_infos;
+    if (dev_lapack_infos.empty()) {
+        info_checker_callback(Status::OK(), host_lapack_infos); 
+        return;
+    }
+
+    // Launch memcpys to copy info back from device to host
+    for (const auto& dev_lapack_info : dev_lapack_infos) {
+        bool success = true;
+        auto host_copy = dev_lapack_info.CopyToHost(&success);
+        OP_REQUIRES(
+            solver->context(), success, 
+            errors::Internal(
+                "Failed to launch copy of dev_lapack_info to host, debug_info = ",
+                dev_lapack_info.debug_info()));
+        host_lapack_infos.push_back(std::move(host_copy)); 
+    }
+
+    // This callback checks that all batch items in all calls were processed
+    // successfully and passes status to the info_checker_callback accordingly.
+    auto* stream = solver->context()->op_device_context()->stream();
+    auto wrapped_info_checker_callback = 
+        [stream](
+            ROCmSolver* solver,
+            std::function<void(const Status&, const std::vector<HostLapackInfo>&)>
+                info_checker_callback,
+            std::vector<HostLapackInfo> host_lapack_infos) {
+        ScopedActivateExecutorContext scoped_activation{stream->parent()};
+        Status status;
+        for (const auto& host_lapack_info : host_lapack_infos) {
+            for (int i = 0; i < host_lapack_info.size() && status.ok(); ++i) {
+                const int info_value = host_lapack_info(i);
+                if (info_value != 0) {
+                    status = errors::InvalidArgument(
+                        "Got info = ", info_value, " for batch index ", i,
+                        ", expected info = 0. Debug_info = ",
+                        host_lapack_info.debug_info());
+                }
+            }
+            if (!status.ok()) {
+                break;
+            }
+        }
+        // Delete solver to release temp tensor refs.
+        delete solver;
+
+        // Delegate further error checking to provided functor.
+        info_checker_callback(status, host_lapack_infos);
+    };
+    // Note: An std::function cannot have unique_ptr arguments (it must be copy
+    // constructible and therefore so must its arguments). Therefore, we release
+    // solver into a raw pointer to be deleted at the end of
+    // wrapped_info_checker_callback.
+    // Release ownership of solver. It will be deleted in the cb callback.
+    auto solver_raw_ptr = solver.release();
+    auto cb =
+        std::bind(wrapped_info_checker_callback, solver_raw_ptr,
+                  std::move(info_checker_callback), std::move(host_lapack_infos));
+    
+    solver_raw_ptr->context()
+        ->device()
+        ->tensorflow_gpu_device_info()
+        ->event_mgr->ThenExecute(stream, std::move(cb));
+}
+
+// static
+void ROCmSolver::CheckLapackInfoAndDeleteSolverAsync(
+    std::unique_ptr<ROCmSolver> solver,
+    const std::vector<DeviceLapackInfo>& dev_lapack_info,
+    AsyncOpKernel::DoneCallback done) {
+    OpKernelContext* context = solver->context();
+    auto wrapped_done = [context, done](
+                            const Status& status,
+                            const std::vector<HostLapackInfo>& /* unused */) {
+        if (done != nullptr) {
+            OP_REQUIRES_OK_ASYNC(context, status, done);
+            done();
+        } else {
+            OP_REQUIRES_OK(context, status);
+        }
+    };
+    CheckLapackInfoAndDeleteSolverAsync(std::move(solver), dev_lapack_info,
+                                        wrapped_done);
+}
 
 #define TF_RETURN_IF_ROCBLAS_ERROR(expr)                                  \
   do {                                                                    \
@@ -144,13 +235,12 @@ ROCmSolver::~ROCmSolver() {
 #define GETRF_INSTANCE(Scalar, type_prefix)                                   \
   template <>                                                                 \
   Status ROCmSolver::getrf<Scalar>(int m, int n, Scalar* A, int lda,          \
-                                   int* dev_pivots) {                         \
+                                   int* dev_pivots, int* dev_lapack_info) {   \
     mutex_lock lock(handle_map_mutex);                                        \
-    int info = 0;                                                             \
     using ROCmScalar = typename ROCmComplexT<Scalar>::type;                   \
     TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrf, type_prefix)(                 \
         rocm_blas_handle_, m, n, reinterpret_cast<ROCmScalar*>(A), lda,       \
-        dev_pivots, &info));                                                  \
+        dev_pivots, dev_lapack_info));                                        \
     return Status::OK();                                                      \
   }
 
@@ -176,16 +266,10 @@ TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
   Status ROCmSolver::getrf_batched<Scalar>(                                   \
                                    int m, int n, Scalar** A, int lda,         \
                                    int* dev_pivots, rocblas_stride stride,    \
-                                   int* info, const int batch_size) {         \
+                                   DeviceLapackInfo* dev_info,                \
+                                   const int batch_size) {                    \
     mutex_lock lock(handle_map_mutex);                                        \
     using ROCmScalar = typename ROCmComplexT<Scalar>::type;                   \
-    ScratchSpace<int> dev_info =                                              \
-        this->GetScratchSpace<int>(sizeof(int*)*batch_size, "",               \
-        /*on host*/ false);                                                   \
-    if (!CopyHostToDevice(context_, dev_info.mutable_data(), info,            \
-                          dev_info.bytes())) {                                \
-      return errors::Internal("GetrfBatched: Failed to allocated info");      \
-    }                                                                         \
     ScratchSpace<uint8> dev_a =                                               \
         this->GetScratchSpace<uint8>(sizeof(ROCmScalar*) * batch_size, "",    \
         /*on host */ false);                                                  \
@@ -196,7 +280,7 @@ TF_CALL_LAPACK_TYPES(GETRS_INSTANCE);
     TF_RETURN_IF_ROCBLAS_ERROR(SOLVER_FN(getrf_batched, type_prefix)(         \
         rocm_blas_handle_, m, n,                                              \
         reinterpret_cast<ROCmScalar**>(dev_a.mutable_data()), lda,            \
-        dev_pivots, stride, dev_info.mutable_data(), batch_size));            \
+        dev_pivots, stride, dev_info->mutable_data(), batch_size));           \
     return Status::OK();                                                      \
   }
 
