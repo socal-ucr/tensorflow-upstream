@@ -487,7 +487,7 @@ class MatrixSolveOpGpu : public AsyncOpKernel {
         OP_REQUIRES_OK_ASYNC(
             context,
             solver->getrf(n, n, &input_copy_reshaped(batch, 0, 0), n,
-                          &pivots_mat(batch, 0), &dev_info.back(batch)),
+                          &pivots_mat(batch, 0), &dev_info.back()(batch)),
             done);
       }
     }

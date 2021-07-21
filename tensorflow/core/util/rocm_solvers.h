@@ -111,6 +111,12 @@ class ROCmSolver {
   ScratchSpace<Scalar> GetScratchSpace(int64 size,
                                        const std::string& debug_info,
                                        bool on_host);
+  // Returns a DeviceLapackInfo that will live for the duration of the
+  // ROCmSolver object.
+  inline DeviceLapackInfo GetDeviceLapackInfo(int64 size,
+                                              const std::string& debug_info);
+
+
   // ====================================================================
   // Wrappers for ROCSolver start here
   //
@@ -121,7 +127,7 @@ class ROCmSolver {
   // LU factorization.
   // Computes LU factorization with partial pivoting P * A = L * U.
   template <typename Scalar>
-  Status getrf(int m, int n, Scalar* dev_A, int lda, int* dev_pivots int* info);
+  Status getrf(int m, int n, Scalar* dev_A, int lda, int* dev_pivots, int* info);
 
   // Uses LU factorization to solve A * X = B.
   template <typename Scalar>
