@@ -498,6 +498,7 @@ struct Quant8Fwd<GPUDevice, T> {
       else
         printf("ERROR: bad W1,W2 values\n"); //shouldn't happen, should be tested up the stack
     }
+    /*
     else if(W1==8) {
       if(W2==1)
         op=Quant8FwdKernel<T,8,1>;
@@ -508,10 +509,15 @@ struct Quant8Fwd<GPUDevice, T> {
       else
         printf("ERROR: bad W1,W2 values\n"); //shouldn't happen, should be tested up the stack
     }
+    */
     else
        printf("ERROR: bad W1 value\n");
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::uniform_int_distribution<uint32_t> distribution(0,0xFFFFFFFF);
+    uint32_t seed = distribution(gen); 
     TF_CHECK_OK(GpuLaunchKernel(op, (count + kThreadInBlock - 1) / kThreadInBlock,
-        kThreadInBlock, 0, d.stream(), input.data(), output.data(), count, exp_low_cutoff, stoch));
+        kThreadInBlock, 0, d.stream(), input.data(), output.data(), count, exp_low_cutoff, stoch, seed));
   }
 };
 

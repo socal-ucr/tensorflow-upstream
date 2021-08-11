@@ -158,7 +158,7 @@ static Status DoGemmWithAlgorithm(
         /*leading dim of RHS=*/rhs_matrix.num_rows, rhs_stride,
         /*beta=*/beta, &output_data,
         /*leading dim of output=*/output_matrix.num_rows, output_stride,
-        batch_size);
+        batch_size, 0);
   }
 
   return stream->ThenBlasGemm(
@@ -168,7 +168,7 @@ static Status DoGemmWithAlgorithm(
       /*leading dim of LHS=*/lhs_matrix.num_rows, rhs_data,
       /*leading dim of RHS=*/rhs_matrix.num_rows,
       /*beta=*/beta, &output_data,
-      /*leading dim of output=*/output_matrix.num_rows);
+      /*leading dim of output=*/output_matrix.num_rows, 0);
 }
 
 Status RunGemm(const GpuGemmConfig &gemm_config,

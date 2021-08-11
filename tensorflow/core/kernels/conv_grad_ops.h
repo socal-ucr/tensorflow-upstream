@@ -176,7 +176,7 @@ struct LaunchConv2DBackpropInputOp {
                   int row_dilation, int col_dilation, int row_stride,
                   int col_stride, const Padding& padding,
                   const std::vector<int64>& explicit_paddings,
-                  Tensor* in_backprop, TensorFormat data_format);
+                  Tensor* in_backprop, TensorFormat data_format, bool f8_enable);
 };
 
 template <typename Device, typename T>
@@ -186,7 +186,7 @@ struct LaunchConv2DBackpropFilterOp {
                   int row_dilation, int col_dilation, int row_stride,
                   int col_stride, const Padding& padding,
                   const std::vector<int64>& explicit_paddings,
-                  Tensor* filter_backprop, TensorFormat data_format);
+                  Tensor* filter_backprop, TensorFormat data_format, bool f8_enable);
 };
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -197,7 +197,7 @@ struct LaunchConv2DBackpropInputOp<Eigen::GpuDevice, T> {
                   int col_dilation, int row_stride, int col_stride,
                   const Padding& padding,
                   const std::vector<int64>& explicit_paddings, Tensor* output,
-                  TensorFormat data_format);
+                  TensorFormat data_format, bool f8_enable);
 };
 
 template <typename T>
@@ -207,7 +207,7 @@ struct LaunchConv2DBackpropFilterOp<Eigen::GpuDevice, T> {
                   int row_dilation, int col_dilation, int row_stride,
                   int col_stride, const Padding& padding,
                   const std::vector<int64>& explicit_paddings,
-                  Tensor* filter_backprop, TensorFormat data_format);
+                  Tensor* filter_backprop, TensorFormat data_format, bool f8_enable);
 };
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 }  // namespace tensorflow

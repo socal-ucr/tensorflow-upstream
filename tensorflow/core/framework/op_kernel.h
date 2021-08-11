@@ -54,6 +54,7 @@ limitations under the License.
 #include "tensorflow/core/platform/thread_annotations.h"
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/protobuf/config.pb.h"
+#include "tensorflow/core/util/env_var.h"
 #include "tensorflow/core/util/managed_stack_trace.h"
 
 namespace Eigen {
@@ -369,6 +370,15 @@ class OpKernelConstruction {
   // on Device::MakeTensorFromProto for longer-term replacement
   // ideas.
   DeviceBase* device() const { return device_; }
+
+  inline bool AllowF8() const {
+    bool f8 = false;
+    GetAttr("_f8", &f8);
+    if(f8)
+      return true;
+    ReadBoolFromEnvVar("TF_ROCM_F8", false, &f8);
+    return f8;
+  }
 
  private:
   const DeviceType device_type_;

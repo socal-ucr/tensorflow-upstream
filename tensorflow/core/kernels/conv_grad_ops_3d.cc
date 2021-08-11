@@ -1246,6 +1246,7 @@ class Conv3DBackpropInputOp<GPUDevice, T> : public OpKernel {
         errors::InvalidArgument("Spatial strides should be larger than 0."));
     OP_REQUIRES_OK(context, context->GetAttr("padding", &padding_));
     cudnn_use_autotune_ = CudnnUseAutotune();
+    f8_enable_ = context->AllowF8();
   }
   void Compute(OpKernelContext* context) override {
     const Tensor& filter = context->input(1);
@@ -1299,7 +1300,7 @@ class Conv3DBackpropInputOp<GPUDevice, T> : public OpKernel {
 
       OP_REQUIRES_OK(
           context, stream->ThenBlasGemm(transpose, no_transpose, n, m, k, b_ptr,
-                                        k, a_ptr, k, &c_ptr, n));
+                                        k, a_ptr, k, &c_ptr, n, 2+(f8_enable_?4:0)));
       return;
     } else if (!is_grouped_convolution &&
                dims.filter_size(0) == dims.input_size(0) &&
@@ -1323,7 +1324,7 @@ class Conv3DBackpropInputOp<GPUDevice, T> : public OpKernel {
 
       OP_REQUIRES_OK(
           context, stream->ThenBlasGemm(transpose, no_transpose, n, m, k, b_ptr,
-                                        k, a_ptr, k, &c_ptr, n));
+                                        k, a_ptr, k, &c_ptr, n, 2+(f8_enable_?4:0)));
       return;
     }
 
@@ -1732,6 +1733,7 @@ class Conv3DBackpropInputOp<GPUDevice, T> : public OpKernel {
   TensorFormat data_format_;
   bool takes_shape_;
   bool cudnn_use_autotune_;
+  bool f8_enable_;
 };
 
 // A dummy type to group backward filter autotune results together.
@@ -1791,6 +1793,7 @@ class Conv3DBackpropFilterOp<GPUDevice, T> : public OpKernel {
         errors::InvalidArgument("Spatial strides should be larger than 0."));
     OP_REQUIRES_OK(context, context->GetAttr("padding", &padding_));
     cudnn_use_autotune_ = CudnnUseAutotune();
+    f8_enable_ = context->AllowF8(); 
   }
 
   void Compute(OpKernelContext* context) override {
@@ -1855,7 +1858,7 @@ class Conv3DBackpropFilterOp<GPUDevice, T> : public OpKernel {
       OP_REQUIRES_OK(context,
                      stream->ThenBlasGemm(se::blas::Transpose::kNoTranspose,
                                           se::blas::Transpose::kTranspose, n, m,
-                                          k, a_ptr, n, b_ptr, m, &c_ptr, n));
+                                          k, a_ptr, n, b_ptr, m, &c_ptr, n, 1+(f8_enable_?4:0)));
       return;
     } else if (!is_grouped_convolution &&
                dims.filter_size(0) == dims.input_size(0) &&
@@ -1877,7 +1880,7 @@ class Conv3DBackpropFilterOp<GPUDevice, T> : public OpKernel {
       OP_REQUIRES_OK(context,
                      stream->ThenBlasGemm(se::blas::Transpose::kNoTranspose,
                                           se::blas::Transpose::kTranspose, n, m,
-                                          k, b_ptr, n, a_ptr, m, &c_ptr, n));
+                                          k, b_ptr, n, a_ptr, m, &c_ptr, n, 2+(f8_enable_?4:0)));
       return;
     }
 
@@ -2263,6 +2266,7 @@ class Conv3DBackpropFilterOp<GPUDevice, T> : public OpKernel {
   TensorFormat data_format_;
   bool takes_shape_;
   bool cudnn_use_autotune_;
+  bool f8_enable_;
 };
 
 #define REGISTER_GPU_KERNEL(T)                                                \

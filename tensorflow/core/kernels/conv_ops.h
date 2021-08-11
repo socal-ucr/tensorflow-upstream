@@ -38,7 +38,7 @@ struct LaunchConv2DOp {
                   int col_dilation, int row_stride, int col_stride,
                   const Padding& padding,
                   const std::vector<int64>& explicit_paddings, Tensor* output,
-                  TensorFormat data_format);
+                  TensorFormat data_format, bool f8_enable);
 };
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -49,7 +49,7 @@ struct LaunchConv2DOp<Eigen::GpuDevice, T> {
                   int col_dilation, int row_stride, int col_stride,
                   const Padding& padding,
                   const std::vector<int64>& explicit_paddings, Tensor* output,
-                  TensorFormat data_format);
+                  TensorFormat data_format, bool f8_enable);
 };
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 

@@ -63,21 +63,21 @@ template <typename Device, typename T>
 struct LaunchDepthwiseConvOp {
   void operator()(OpKernelContext* ctx, const DepthwiseArgs& args,
                   const T* input, const T* filter, T* output,
-                  TensorFormat data_format);
+                  TensorFormat data_format, bool f8);
 };
 
 template <typename Device, typename T>
 struct LaunchDepthwiseConvBackpropInputOp {
   void operator()(OpKernelContext* ctx, const DepthwiseArgs& args,
                   const T* out_backprop, const T* filter, T* in_backprop,
-                  TensorFormat data_format);
+                  TensorFormat data_format, bool f8);
 };
 
 template <typename Device, typename T>
 struct LaunchDepthwiseConvBackpropFilterOp {
   void operator()(OpKernelContext* ctx, const DepthwiseArgs& args,
                   const T* out_backprop, const T* input, T* filter_backprop,
-                  TensorFormat data_format);
+                  TensorFormat data_format, bool f8);
 };
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -85,21 +85,21 @@ template <typename T>
 struct LaunchDepthwiseConvOp<Eigen::GpuDevice, T> {
   void operator()(OpKernelContext* ctx, const DepthwiseArgs& args,
                   const T* input, const T* filter, T* output,
-                  TensorFormat data_format);
+                  TensorFormat data_format, bool f8);
 };
 
 template <typename T>
 struct LaunchDepthwiseConvBackpropInputOp<Eigen::GpuDevice, T> {
   void operator()(class OpKernelContext* ctx, const DepthwiseArgs& args,
                   const T* out_backprop, const T* filter, T* in_backprop,
-                  TensorFormat data_format);
+                  TensorFormat data_format, bool f8);
 };
 
 template <typename T>
 struct LaunchDepthwiseConvBackpropFilterOp<Eigen::GpuDevice, T> {
   void operator()(class OpKernelContext* ctx, const DepthwiseArgs& args,
                   const T* out_backprop, const T* input, T* filter_backprop,
-                  TensorFormat data_format);
+                  TensorFormat data_format, bool f8);
 };
 #endif
 

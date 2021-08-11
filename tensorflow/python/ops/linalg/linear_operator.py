@@ -1218,6 +1218,7 @@ def _matmul(  # pylint:disable=missing-docstring
     a_is_sparse=False,
     b_is_sparse=False,
     output_type=None,  # pylint: disable=unused-argument
+    allow_f8=None,
     name=None):
   if transpose_a or transpose_b:
     raise ValueError("Transposing not supported at this time.")
@@ -1229,10 +1230,12 @@ def _matmul(  # pylint:disable=missing-docstring
         a,
         adjoint=(not adjoint_b),
         adjoint_arg=(not adjoint_a),
+        allow_f8=allow_f8,
         name=name)
     return linalg.adjoint(adjoint_matmul)
   return a.matmul(
-      b, adjoint=adjoint_a, adjoint_arg=adjoint_b, name=name)
+      b, adjoint=adjoint_a, adjoint_arg=adjoint_b, name=name,
+         allow_f8=allow_f8)
 
 
 @dispatch.dispatch_for_types(linalg.solve, LinearOperator)

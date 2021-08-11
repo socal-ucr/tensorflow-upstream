@@ -46,6 +46,9 @@ limitations under the License.
 namespace stream_executor {
 namespace gpu {
 
+const int rocblas_datatype_fp8_r = 170;
+const int rocblas_datatype_bf8_r = 171;
+
 PLUGIN_REGISTRY_DEFINE_PLUGIN_ID(kRocBlasPlugin);
 
 extern void broadcast_fp32(void* stream, float* dst, int dst_stride,
@@ -1348,14 +1351,42 @@ bool ROCMBlas::DoBlasTrsv(Stream *stream, blas::UpperLower uplo,
       ROCMBlasUpperLower(uplo), ROCMBlasTranspose(trans),
       ROCMBlasDiagonal(diag), n, complex_cast(a), lda, complex_cast(x), incx);
 }
+/*
+template <typename T>
+__global__ void Quant8_52_inplace(T* _p, int32_t count, bool stoch, uint32_t seed);
+template <typename T>
+__global__ void Quant8_43_inplace(T* _p, int32_t count, bool stoch, uint32_t seed);
+*/
+void Quant8_inplace(__half* _p, int32_t count, uint32_t seed, hipStream_t stream, bool f152);
 
+port::Status ROCMBlas::DoEmulatedBlasGemmF8(Stream *stream, rocblas_operation transa,
+                      rocblas_operation transb, 
+                      uint64 m, uint64 n, uint64 k, 
+                      const void *alpha, const void* a, int lda, 
+                      const void *b, int ldb, 
+                      const void *beta, void *c,
+                      int ldc, int grad_flags) {
+        uint32_t seed = time(0) ^ (m+n+k); // todo: use std::random
+        // todo: confirm dimensions; is it possible for buffer dims to differ due to unusual value of lda?
+        Quant8_inplace(const_cast<__half*>(reinterpret_cast<const __half*>(a)), m*k, seed, AsGpuStreamValue(stream), grad_flags & 1);
+        Quant8_inplace(const_cast<__half*>(reinterpret_cast<const __half*>(b)), n*k, seed^0x5555, AsGpuStreamValue(stream), (grad_flags>>1) & 1);
+        return DoBlasInternalStatus(
+            wrap::rocblas_gemm_ex, stream, /* pointer_mode_host = */ true,
+            transa, transb,
+            (rocblas_int)m, (rocblas_int)n, (rocblas_int)k, alpha, a,
+            rocblas_datatype_f16_r, lda, b, rocblas_datatype_f16_r,
+            ldb, beta, c, rocblas_datatype_f16_r, ldc, c,
+            rocblas_datatype_f16_r, ldc, rocblas_datatype_f32_r,
+            rocblas_gemm_algo_standard, 0, 0);
+}
+ 
 port::Status ROCMBlas::DoBlasGemm(Stream *stream, blas::Transpose transa,
                                   blas::Transpose transb, uint64 m, uint64 n,
                                   uint64 k, blas::DataType dtype,
                                   const void *alpha, const DeviceMemoryBase &a,
                                   int lda, const DeviceMemoryBase &b, int ldb,
                                   const void *beta, DeviceMemoryBase *c,
-                                  int ldc) {
+                                  int ldc, int grad_flags) {
   blas_log("DoBlasGemm");
   VLOG(1) << absl::StreamFormat(
       "doing rocBLAS GEMM: at=%d bt=%d m=%u n=%u "
@@ -1393,6 +1424,13 @@ port::Status ROCMBlas::DoBlasGemm(Stream *stream, blas::Transpose transa,
       port::StatusOr<bool> maybe_hasXDLOPS = GpuDriver::GetMFMASupport();
       if (maybe_hasXDLOPS.ok() && maybe_hasXDLOPS.ValueOrDie()) {
         VLOG(1) << "Using rocblas_gemm_ex";
+        bool hasFP8 = true;
+        if(hasFP8 && (grad_flags & 4)) {
+           return DoEmulatedBlasGemmF8(stream, 
+             ROCMBlasTranspose(transa), ROCMBlasTranspose(transb),
+             m, n, k, alpha, a.opaque(), lda,
+             b.opaque(), ldb, beta, c->opaque(), ldc, grad_flags);
+        }
         return DoBlasInternalStatus(
             wrap::rocblas_gemm_ex, stream, /* pointer_mode_host = */ true,
             ROCMBlasTranspose(transa), ROCMBlasTranspose(transb),
@@ -1770,7 +1808,7 @@ port::Status ROCMBlas::DoBlasGemmBatchedInternal(
     const port::ArraySlice<DeviceMemory<T> *> &a_ptrs_to_wrappers, int lda,
     const port::ArraySlice<DeviceMemory<T> *> &b_ptrs_to_wrappers, int ldb,
     T beta, const port::ArraySlice<DeviceMemory<T> *> &c_ptrs_to_wrappers,
-    int ldc, int batch_count, ScratchAllocator *scratch_allocator) {
+    int ldc, int batch_count, ScratchAllocator *scratch_allocator, int grad_flags) {
   using MAPPED_T = typename RocBlasTypeConversionHelper<T>::mapped_type;
 
   // Sanity checks before making any further progress
@@ -1863,15 +1901,15 @@ bool ROCMBlas::DoBlasGemmBatched(
     const port::ArraySlice<DeviceMemory<Eigen::half> *> &a, int lda,
     const port::ArraySlice<DeviceMemory<Eigen::half> *> &b, int ldb, float beta,
     const port::ArraySlice<DeviceMemory<Eigen::half> *> &c, int ldc,
-    int batch_count, ScratchAllocator *scratch_allocator) {
+    int batch_count, ScratchAllocator *scratch_allocator, int grad_flags) {
   blas_log("DoBlasGemmBatched");
   const Eigen::half alpha_half(alpha);
   const Eigen::half beta_half(beta);
-
+  // TODO: blas_gemm_ex pathway
   port::Status status = DoBlasGemmBatchedInternal(
       wrap::rocblas_hgemm_strided_batched, stream, transa, transb, m, n, k,
       alpha_half, a, lda, b, ldb, beta_half, c, ldc, batch_count,
-      scratch_allocator);
+      scratch_allocator, grad_flags);
   if (!status.ok()) {
     LOG(ERROR) << status;
   }
@@ -1885,12 +1923,12 @@ bool ROCMBlas::DoBlasGemmBatched(
     const port::ArraySlice<DeviceMemory<float> *> &a_array, int lda,
     const port::ArraySlice<DeviceMemory<float> *> &b_array, int ldb, float beta,
     const port::ArraySlice<DeviceMemory<float> *> &c_array, int ldc,
-    int batch_count, ScratchAllocator *scratch_allocator) {
+    int batch_count, ScratchAllocator *scratch_allocator, int grad_flags) {
   blas_log("DoBlasGemmBatched");
   port::Status status = DoBlasGemmBatchedInternal(
       wrap::rocblas_sgemm_strided_batched, stream, transa, transb, m, n, k,
       alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count,
-      scratch_allocator);
+      scratch_allocator, grad_flags);
   if (!status.ok()) {
     LOG(ERROR) << status;
   }
@@ -1903,12 +1941,12 @@ bool ROCMBlas::DoBlasGemmBatched(
     const port::ArraySlice<DeviceMemory<double> *> &a_array, int lda,
     const port::ArraySlice<DeviceMemory<double> *> &b_array, int ldb,
     double beta, const port::ArraySlice<DeviceMemory<double> *> &c_array,
-    int ldc, int batch_count, ScratchAllocator *scratch_allocator) {
+    int ldc, int batch_count, ScratchAllocator *scratch_allocator, int grad_flags) {
   blas_log("DoBlasGemmBatched");
   port::Status status = DoBlasGemmBatchedInternal(
       wrap::rocblas_dgemm_strided_batched, stream, transa, transb, m, n, k,
       alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count,
-      scratch_allocator);
+      scratch_allocator, grad_flags);
   if (!status.ok()) {
     LOG(ERROR) << status;
   }
@@ -1923,12 +1961,12 @@ bool ROCMBlas::DoBlasGemmBatched(
     const port::ArraySlice<DeviceMemory<std::complex<float>> *> &b_array,
     int ldb, std::complex<float> beta,
     const port::ArraySlice<DeviceMemory<std::complex<float>> *> &c_array,
-    int ldc, int batch_count, ScratchAllocator *scratch_allocator) {
+    int ldc, int batch_count, ScratchAllocator *scratch_allocator, int grad_flags) {
   blas_log("DoBlasGemmBatched");
   port::Status status = DoBlasGemmBatchedInternal(
       wrap::rocblas_cgemm_strided_batched, stream, transa, transb, m, n, k,
       alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count,
-      scratch_allocator);
+      scratch_allocator, grad_flags);
   if (!status.ok()) {
     LOG(ERROR) << status;
   }
@@ -1944,12 +1982,12 @@ bool ROCMBlas::DoBlasGemmBatched(
     const port::ArraySlice<DeviceMemory<std::complex<double>> *> &b_array,
     int ldb, std::complex<double> beta,
     const port::ArraySlice<DeviceMemory<std::complex<double>> *> &c_array,
-    int ldc, int batch_count, ScratchAllocator *scratch_allocator) {
+    int ldc, int batch_count, ScratchAllocator *scratch_allocator, int grad_flags) {
   blas_log("DoBlasGemmBatched");
   port::Status status = DoBlasGemmBatchedInternal(
       wrap::rocblas_zgemm_strided_batched, stream, transa, transb, m, n, k,
       alpha, a_array, lda, b_array, ldb, beta, c_array, ldc, batch_count,
-      scratch_allocator);
+      scratch_allocator, grad_flags);
   if (!status.ok()) {
     LOG(ERROR) << status;
   }
@@ -2291,7 +2329,7 @@ port::Status ROCMBlas::DoBlasGemmStridedBatched(
     uint64 n, uint64 k, blas::DataType dtype, const void *alpha,
     const DeviceMemoryBase &a, int lda, int64 stride_a,
     const DeviceMemoryBase &b, int ldb, int64 stride_b, const void *beta,
-    DeviceMemoryBase *c, int ldc, int64 stride_c, int batch_count) {
+    DeviceMemoryBase *c, int ldc, int64 stride_c, int batch_count, int grad_flags) {
   VLOG(1) << absl::StreamFormat(
       "doing rocBLAS SGEMM Strided Batched<float>: at=%d bt=%d m=%u n=%u "
       "k=%llu alpha=%p a=%p lda=%d b=%p ldb=%d beta=%p "
@@ -2303,6 +2341,7 @@ port::Status ROCMBlas::DoBlasGemmStridedBatched(
     case blas::DataType::kHalf: {
       const Eigen::half alpha_half(*static_cast<const float *>(alpha));
       const Eigen::half beta_half(*static_cast<const float *>(beta));
+     // TODO: blas_gemm_ex pathway
       return DoBlasInternalStatus(
           wrap::rocblas_hgemm_strided_batched, stream,
           false, /* pointer_mode_host */

@@ -113,7 +113,7 @@ struct LaunchConv2DBackpropInputOpImpl {
                   int row_dilation, int col_dilation, int row_stride,
                   int col_stride, const Padding& padding,
                   const std::vector<int64>& explicit_paddings,
-                  Tensor* in_backprop, TensorFormat data_format) {
+                  Tensor* in_backprop, TensorFormat data_format, bool f8_enable) {
     std::vector<int32> strides(4, 1);
     std::vector<int32> dilations(4, 1);
 
@@ -208,11 +208,11 @@ struct LaunchConv2DBackpropInputOp<CPUDevice, T> {
                   int row_dilation, int col_dilation, int row_stride,
                   int col_stride, const Padding& padding,
                   const std::vector<int64>& explicit_paddings,
-                  Tensor* in_backprop, TensorFormat data_format) {
+                  Tensor* in_backprop, TensorFormat data_format, bool f8_enable) {
     LaunchConv2DBackpropInputOpImpl<CPUDevice, T> launcher;
     launcher(ctx, use_cudnn, cudnn_use_autotune, out_backprop, filter,
              row_dilation, col_dilation, row_stride, col_stride, padding,
-             explicit_paddings, in_backprop, data_format);
+             explicit_paddings, in_backprop, data_format, f8_enable);
   }
 };
 
@@ -413,6 +413,7 @@ class Conv2DBackpropInputOp : public OpKernel {
           errors::InvalidArgument(
               "Conv2DBackpropInputOp [CPU or GPU(int32)] not yet support "
               "dilation rates larger than 1."));
+      f8_enable_ = context->AllowF8();
     }
   }
 
@@ -453,7 +454,7 @@ class Conv2DBackpropInputOp : public OpKernel {
     LaunchConv2DBackpropInputOp<Device, T> launch;
     launch(context, use_cudnn_, cudnn_use_autotune_, out_backprop, filter,
            dilation_rows, dilation_cols, stride_rows, stride_cols, padding_,
-           explicit_paddings_, in_backprop, data_format_);
+           explicit_paddings_, in_backprop, data_format_, f8_enable_);
   }
 
  private:
@@ -465,6 +466,7 @@ class Conv2DBackpropInputOp : public OpKernel {
 
   bool use_cudnn_ = false;
   bool cudnn_use_autotune_ = false;
+  bool f8_enable_ = false;
 
   TF_DISALLOW_COPY_AND_ASSIGN(Conv2DBackpropInputOp);
 };
@@ -511,6 +513,7 @@ class Conv2DCustomBackpropInputOp : public OpKernel {
                    context->GetAttr("explicit_paddings", &explicit_paddings_));
     OP_REQUIRES_OK(context, CheckValidPadding(padding_, explicit_paddings_,
                                               /*num_dims=*/4, data_format_));
+    f8_enable_ = context->AllowF8();
   }
 
   void Compute(OpKernelContext* context) override {
@@ -761,6 +764,7 @@ class Conv2DCustomBackpropInputOp : public OpKernel {
   Padding padding_;
   std::vector<int64> explicit_paddings_;
   TensorFormat data_format_;
+  bool f8_enable_ = false;
 
   TF_DISALLOW_COPY_AND_ASSIGN(Conv2DCustomBackpropInputOp);
 };

@@ -54,11 +54,11 @@ struct LaunchConv2DBackpropInputOp<GPUDevice, int32> {
                   int row_dilation, int col_dilation, int row_stride,
                   int col_stride, const Padding& padding,
                   const std::vector<int64>& explicit_paddings,
-                  Tensor* in_backprop, TensorFormat data_format) {
+                  Tensor* in_backprop, TensorFormat data_format, bool f8_enable) {
     LaunchConv2DBackpropInputOpImpl<GPUDevice, int32> launcher;
     launcher(ctx, use_cudnn, cudnn_use_autotune, out_backprop, filter,
              row_dilation, col_dilation, row_stride, col_stride, padding,
-             explicit_paddings, in_backprop, data_format);
+             explicit_paddings, in_backprop, data_format, f8_enable);
   }
 };
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -69,7 +69,7 @@ void LaunchConv2DBackpropInputOp<GPUDevice, T>::operator()(
     const Tensor& out_backprop, const Tensor& filter, int row_dilation,
     int col_dilation, int row_stride, int col_stride, const Padding& padding,
     const std::vector<int64>& explicit_paddings, Tensor* in_backprop,
-    TensorFormat data_format) {
+    TensorFormat data_format, bool f8_enable) {
   using se::dnn::AlgorithmConfig;
   using se::dnn::AlgorithmDesc;
   using se::dnn::ProfileResult;
@@ -123,8 +123,7 @@ void LaunchConv2DBackpropInputOp<GPUDevice, T>::operator()(
         "without cudnn"));
     return;
   }
-
-  // If the filter in-depth (filter_shape.dim_size(2)) is 1 and smaller than the
+    // If the filter in-depth (filter_shape.dim_size(2)) is 1 and smaller than the
   // input depth, it's a depthwise convolution. More generally, if the filter
   // in-depth divides but is smaller than the input depth, it is a grouped
   // convolution.
@@ -150,7 +149,7 @@ void LaunchConv2DBackpropInputOp<GPUDevice, T>::operator()(
     auto no_transpose = se::blas::Transpose::kNoTranspose;
 
     OP_REQUIRES_OK(ctx, stream->ThenBlasGemm(transpose, no_transpose, n, m, k,
-                                             b_ptr, k, a_ptr, k, &c_ptr, n));
+                                             b_ptr, k, a_ptr, k, &c_ptr, n, 1+(f8_enable?4:0)));
     return;
   } else if (dims.spatial_dims[0].filter_size ==
                  dims.spatial_dims[0].input_size &&
@@ -176,7 +175,7 @@ void LaunchConv2DBackpropInputOp<GPUDevice, T>::operator()(
     auto no_transpose = se::blas::Transpose::kNoTranspose;
 
     OP_REQUIRES_OK(ctx, stream->ThenBlasGemm(transpose, no_transpose, n, m, k,
-                                             b_ptr, k, a_ptr, k, &c_ptr, n));
+                                             b_ptr, k, a_ptr, k, &c_ptr, n, 1+(f8_enable?4:0)));
     return;
   }
 
