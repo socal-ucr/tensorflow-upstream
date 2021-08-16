@@ -107,10 +107,9 @@ SHELL ["/bin/bash", "-c"]
 ENV PATH="/root//bin:$PATH"
 RUN source /install/common.sh && install_ubuntu_16_python_pip_deps python3.9 && update_bazel_linux
 RUN rm -f /usr/bin/python3 && ln -s /usr/bin/python3.9 /usr/bin/python3
-#RUN ln -s /root//bin/bazel /usr/bin/bazel
 # Set up the master bazelrc configuration file.
 COPY install/.bazelrc /etc/bazel.bazelrc
-
+RUN echo "source /root//.bazel/bin/bazel-complete.bash" >> ~/.bashrc
 # Configure the build for our ROCm configuration.
 ENV TF_NEED_ROCM 1
 
