@@ -104,9 +104,10 @@ RUN /install/install_pi_python3.9_toolchain.sh
 COPY release/common.sh /install/common.sh
 COPY release/* tensorflow/tools/ci_build/release/
 SHELL ["/bin/bash", "-c"] 
-RUN source /install/common.sh && install_ubuntu_16_python_pip_deps python3.9 && export PATH="/root//bin:$PATH" && update_bazel_linux
+ENV PATH="/root//bin:$PATH"
+RUN source /install/common.sh && install_ubuntu_16_python_pip_deps python3.9 && update_bazel_linux
 RUN rm -f /usr/bin/python3 && ln -s /usr/bin/python3.9 /usr/bin/python3
-RUN ln -s /root//bin/bazel /usr/bin/bazel
+#RUN ln -s /root//bin/bazel /usr/bin/bazel
 # Set up the master bazelrc configuration file.
 COPY install/.bazelrc /etc/bazel.bazelrc
 
