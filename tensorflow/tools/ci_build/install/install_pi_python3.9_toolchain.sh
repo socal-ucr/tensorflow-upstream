@@ -14,22 +14,10 @@
 # limitations under the License.
 # ==============================================================================
 
-dpkg --add-architecture armhf
-dpkg --add-architecture arm64
-echo 'deb [arch=arm64,armhf] http://ports.ubuntu.com/ xenial main restricted universe multiverse' >> /etc/apt/sources.list.d/armhf.list
-echo 'deb [arch=arm64,armhf] http://ports.ubuntu.com/ xenial-updates main restricted universe multiverse' >> /etc/apt/sources.list.d/armhf.list
-echo 'deb [arch=arm64,armhf] http://ports.ubuntu.com/ xenial-security main restricted universe multiverse' >> /etc/apt/sources.list.d/armhf.list
-echo 'deb [arch=arm64,armhf] http://ports.ubuntu.com/ xenial-backports main restricted universe multiverse' >> /etc/apt/sources.list.d/armhf.list
-sed -i 's#deb http://archive.ubuntu.com/ubuntu/#deb [arch=amd64] http://archive.ubuntu.com/ubuntu/#g' /etc/apt/sources.list
 yes | add-apt-repository ppa:deadsnakes/ppa
 apt-get update
 apt-get install -y python3.9 python3.9-dev
 apt-get install -y python3-pip 
 ln -sf /usr/bin/python3.9 /usr/local/bin/python3.9
-apt-get install -y libpython3.9-dev:armhf
-apt-get install -y libpython3.9-dev:arm64
 apt-get install -y python3.9-distutils
 python3.9 -m pip install --upgrade pip
-/install/install_pip3.9_packages.sh 
-
-ln -sf /usr/local/lib/python3.9/dist-packages/numpy/core/include/numpy /usr/include/python3.9/numpy
