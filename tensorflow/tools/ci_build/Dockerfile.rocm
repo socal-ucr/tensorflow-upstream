@@ -96,15 +96,20 @@ RUN touch ${ROCM_PATH}/.info/version
 # Copy and run the install scripts.
 COPY install/*.sh /install/
 ARG DEBIAN_FRONTEND=noninteractive
-RUN /install/install_bootstrap_deb_packages.sh
+#RUN /install/install_bootstrap_deb_packages.sh
 RUN /install/install_deb_packages.sh
 RUN /install/install_pi_python3.9_toolchain.sh
-RUN /install/install_bazel.sh
-RUN /install/install_golang.sh
+#RUN /install/install_bazel.sh
+#RUN /install/install_golang.sh
+COPY release/common.sh /install/common.sh
+COPY release/* tensorflow/tools/ci_build/release/
+SHELL ["/bin/bash", "-c"] 
+ENV PATH="/root//bin:$PATH"
+RUN source /install/common.sh && install_ubuntu_16_python_pip_deps python3.9 && update_bazel_linux
 RUN rm -f /usr/bin/python3 && ln -s /usr/bin/python3.9 /usr/bin/python3
 # Set up the master bazelrc configuration file.
 COPY install/.bazelrc /etc/bazel.bazelrc
-
+RUN echo "source /usr/local/lib/bazel/bazel-complete.bash" >> ~/.bashrc
 # Configure the build for our ROCm configuration.
 ENV TF_NEED_ROCM 1
 
