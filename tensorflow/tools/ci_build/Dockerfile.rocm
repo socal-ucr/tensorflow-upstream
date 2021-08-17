@@ -99,7 +99,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 #RUN /install/install_bootstrap_deb_packages.sh
 RUN /install/install_deb_packages.sh
 RUN /install/install_pi_python3.9_toolchain.sh
-#RUN /install/install_bazel.sh
+RUN /install/install_bazel.sh
 #RUN /install/install_golang.sh
 COPY release/common.sh /install/common.sh
 COPY release/* tensorflow/tools/ci_build/release/
