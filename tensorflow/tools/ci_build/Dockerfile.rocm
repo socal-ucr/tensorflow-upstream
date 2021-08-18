@@ -95,18 +95,14 @@ RUN touch ${ROCM_PATH}/.info/version
 
 # Copy and run the install scripts.
 COPY install/*.sh /install/
+COPY release/common.sh /install/common.sh
+COPY release/* tensorflow/tools/ci_build/release/
 ARG DEBIAN_FRONTEND=noninteractive
 RUN /install/install_deb_packages.sh
 RUN /install/install_pi_python3.9_toolchain.sh
-COPY release/common.sh /install/common.sh
-COPY release/* tensorflow/tools/ci_build/release/
 ENV PATH="/root//bin:$PATH"
 SHELL ["/bin/bash", "-c"]
-RUN source /install/common.sh && install_ubuntu_16_python_pip_deps python3.9 \
-    && ln -sf /root//.local/lib/python3.9/site-packages/numpy/core/include/numpy /usr/include/python3.9/numpy 
-#RUN ln -sf /root//.local/lib/python3.9/site-packages /usr/lib/python3/dist-packages
-RUN rm -f /usr/bin/python3 && ln -s /usr/bin/python3.9 /usr/bin/python3
-ENV PYTHONPATH="/root//.local/lib/python3.9/site-packages/"
+#ENV PYTHONPATH="/root//.local/lib/python3.9/site-packages/"
 RUN /install/install_bazel.sh
 # Set up the master bazelrc configuration file.
 COPY install/.bazelrc /etc/bazel.bazelrc
