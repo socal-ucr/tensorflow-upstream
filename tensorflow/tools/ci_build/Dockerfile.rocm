@@ -102,11 +102,10 @@ COPY release/common.sh /install/common.sh
 COPY release/* tensorflow/tools/ci_build/release/
 ENV PATH="/root//bin:$PATH"
 SHELL ["/bin/bash", "-c"]
-RUN source /install/common.sh && install_ubuntu_16_python_pip_deps python3.9
+RUN source /install/common.sh && install_ubuntu_16_python_pip_deps python3.9 \
+    && ln -sf /root//.local/lib/python3.9/dist-packages/numpy/core/include/numpy /usr/include/python3.9/numpy 
 RUN rm -f /usr/bin/python3 && ln -s /usr/bin/python3.9 /usr/bin/python3
-SHELL ["/bin/sh", "-c"]
 ENV PYTHONPATH="/root//.local/lib/python3.9/site-packages/"
-RUN ln -sf /root//.local/lib/python3.9/site-packages/numpy/core/include/numpy /usr/include/python3.9/numpy
 RUN /install/install_bazel.sh
 # Set up the master bazelrc configuration file.
 COPY install/.bazelrc /etc/bazel.bazelrc

@@ -21,4 +21,3 @@ apt-get install -y python3-pip
 ln -sf /usr/bin/python3.9 /usr/local/bin/python3.9
 apt-get install -y python3.9-distutils
 python3.9 -m pip install --upgrade pip
-ln -sf /usr/local/lib/python3.9/dist-packages/numpy/core/include/numpy /usr/include/python3.9/numpy
