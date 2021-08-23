@@ -2258,7 +2258,6 @@ cuda_py_test(
         "//tensorflow/python:platform",
         "//tensorflow/python/ops/linalg",
         "//third_party/py/numpy",
-        "//tensorflow/stream_executor/rocm:rocsolver_wrapper",
     ],
 )
 
