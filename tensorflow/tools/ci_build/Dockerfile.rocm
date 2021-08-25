@@ -104,6 +104,7 @@ COPY release/* tensorflow/tools/ci_build/release/
 ARG DEBIAN_FRONTEND=noninteractive
 RUN /install/install_deb_packages.sh
 RUN /install/install_pi_python3.9_toolchain.sh
+RUN python3 -m pip install -r tensorflow/tools/ci_build/release/requirements_ubuntu.txt
 #COPY /root//.local/lib/python3.9 /usr/local/lib/python3
 
 SHELL ["/bin/bash", "-c"]
