@@ -164,7 +164,7 @@ limitations under the License.
 
 #if BEF_EXECUTABLE
 #include "tensorflow/compiler/mlir/tfrt/transforms/lhlo_gpu_to_tfrt_gpu/gpu_passes.h"
-#include "tfrt/gpu/pass/pass.h"  // from @tf_runtime
+#include "tfrt/gpu/passes/passes.h"  // from @tf_runtime
 #include "tfrt/bef/bef_buffer.h"  // from @tf_runtime
 #include "tfrt/bef_converter/mlir_to_bef_translate.h"  // from @tf_runtime
 #endif  // BEF_EXECUTABLE
@@ -325,7 +325,6 @@ Status GpuCompiler::OptimizeHloModule(
 
     // Expand random number generation.
     pipeline.AddPass<RngExpander>();
-    pipeline.AddPass<BitcastDtypesExpander>();
     pipeline.AddPass<RngBitGeneratorExpander>(RandomAlgorithm::RNG_PHILOX);
 
     // Comparison total order expander
@@ -411,6 +410,7 @@ Status GpuCompiler::OptimizeHloModule(
       options.set_replace_transpose_with_bitcast(false);
       options.set_enable_conv_operand_swap(false);
       pipeline.AddPass<AlgebraicSimplifier>(options);
+      pipeline.AddPass<BitcastDtypesExpander>();
       // AlgebraicSimplifier may add contracting dimensions to a dot.
       pipeline.AddPass<DotDecomposer>();
       // Only merge "smallish" dots.  This threshold was not set carefully, but

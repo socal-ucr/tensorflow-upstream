@@ -1019,11 +1019,9 @@ Status IrEmitterUnnested::EmitConvolutionThunk(mlir::Operation* op) {
 }
 
 Status IrEmitterUnnested::EmitGemmThunk(mlir::Operation* op) {
-  auto make_thunk_for_gemm =
-      [&](auto op, absl::optional<BufferAllocation::Slice> bias = absl::nullopt,
-          absl::optional<double> gemm_bias_beta = absl::nullopt,
-          bool implements_whole_instruction =
-              true) -> StatusOr<std::unique_ptr<Thunk>> {
+  auto make_bef_thunk =
+      [&](auto op, absl::optional<BufferAllocation::Slice> bias =
+                       absl::nullopt) -> StatusOr<std::unique_ptr<Thunk>> {
     TF_ASSIGN_OR_RETURN(auto lhs, GetAllocationSlice(op.lhs()));
     TF_ASSIGN_OR_RETURN(auto rhs, GetAllocationSlice(op.rhs()));
     TF_ASSIGN_OR_RETURN(auto output, GetAllocationSlice(op.output()));
@@ -1031,12 +1029,17 @@ Status IrEmitterUnnested::EmitGemmThunk(mlir::Operation* op) {
     if (bias.has_value()) {
       inputs.push_back(bias.value());
     }
+    return CreateBefThunk(GetThunkInfo(op), op, inputs,
+                          std::vector<BufferAllocation::Slice>{output});
+  };
 
-    if (IsBefThunkEnabled() && op.lhs_stride() && op.rhs_stride()) {
-      // TODO(loreno): TFRT support for zero-strided gemm calls
-      return CreateBefThunk(GetThunkInfo(op), op, inputs,
-                            std::vector<BufferAllocation::Slice>{output});
-    }
+  auto make_gemm_thunk =
+      [&](auto op, absl::optional<double> gemm_bias_beta = absl::nullopt,
+          bool implements_whole_instruction =
+              true) -> StatusOr<std::unique_ptr<Thunk>> {
+    TF_ASSIGN_OR_RETURN(auto lhs, GetAllocationSlice(op.lhs()));
+    TF_ASSIGN_OR_RETURN(auto rhs, GetAllocationSlice(op.rhs()));
+    TF_ASSIGN_OR_RETURN(auto output, GetAllocationSlice(op.output()));
 
     GpuGemmConfig config;
     GemmBackendConfig& backend = config.backend_config;
@@ -1059,17 +1062,16 @@ Status IrEmitterUnnested::EmitGemmThunk(mlir::Operation* op) {
     auto& dims = *backend.mutable_dot_dimension_numbers();
     auto mlir_dims = op.dot_dimension_numbers();
 
-    auto fill_dims = [](mlir::DenseElementsAttr mlir_dim, auto* config_attrs) {
-      for (llvm::APInt e : mlir_dim.getValues<llvm::APInt>())
-        config_attrs->Add(e.getSExtValue());
+    auto fill_dims = [](llvm::ArrayRef<int64_t> mlir_dim, auto* config_attrs) {
+      for (int64_t e : mlir_dim) config_attrs->Add(e);
     };
-    fill_dims(mlir_dims.lhs_batching_dimensions(),
+    fill_dims(mlir_dims.getLhsBatchingDimensions(),
               dims.mutable_lhs_batch_dimensions());
-    fill_dims(mlir_dims.rhs_batching_dimensions(),
+    fill_dims(mlir_dims.getRhsBatchingDimensions(),
               dims.mutable_rhs_batch_dimensions());
-    fill_dims(mlir_dims.lhs_contracting_dimensions(),
+    fill_dims(mlir_dims.getLhsContractingDimensions(),
               dims.mutable_lhs_contracting_dimensions());
-    fill_dims(mlir_dims.rhs_contracting_dimensions(),
+    fill_dims(mlir_dims.getRhsContractingDimensions(),
               dims.mutable_rhs_contracting_dimensions());
 
     return std::unique_ptr<Thunk>(
@@ -1079,7 +1081,10 @@ Status IrEmitterUnnested::EmitGemmThunk(mlir::Operation* op) {
 
   TF_ASSIGN_OR_RETURN(auto thunk, [&]() -> StatusOr<std::unique_ptr<Thunk>> {
     if (auto gemm = mlir::dyn_cast<mlir::lmhlo_gpu::GEMMOp>(op)) {
-      return make_thunk_for_gemm(gemm);
+      // TODO(loreno): TFRT support for zero-strided gemm calls
+      if (IsBefThunkEnabled() && gemm.lhs_stride() && gemm.rhs_stride())
+        return make_bef_thunk(gemm);
+      return make_gemm_thunk(gemm);
     }
 
     if (auto gemm = mlir::dyn_cast<mlir::lmhlo_gpu::GEMM_BiasOp>(op)) {
@@ -1087,11 +1092,15 @@ Status IrEmitterUnnested::EmitGemmThunk(mlir::Operation* op) {
       TF_ASSIGN_OR_RETURN(auto bias, GetAllocationSlice(gemm.bias()));
       TF_ASSIGN_OR_RETURN(auto output, GetAllocationSlice(gemm.output()));
 
+      // TODO(loreno): TFRT support for zero-strided gemm calls
+      if (IsBefThunkEnabled() && gemm.lhs_stride() && gemm.rhs_stride())
+        return make_bef_thunk(gemm, bias);
+
       // The bias is passed inside the output buffer. If those buffers are
       // shared we can just use it, otherwise copy the bias values into the
       // output buffer first.
       if (bias == output) {
-        return make_thunk_for_gemm(gemm, bias, gemm_bias_beta);
+        return make_gemm_thunk(gemm, gemm_bias_beta);
       }
 
       ThunkSequence thunks;
@@ -1102,9 +1111,8 @@ Status IrEmitterUnnested::EmitGemmThunk(mlir::Operation* op) {
           /*mem_size=*/
           ShapeUtil::ByteSizeOf(GetShape(gemm.output()))));
       TF_ASSIGN_OR_RETURN(
-          auto thunk,
-          make_thunk_for_gemm(gemm, bias, gemm_bias_beta,
-                              /*implements_whole_instruction=*/false));
+          auto thunk, make_gemm_thunk(gemm, gemm_bias_beta,
+                                      /*implements_whole_instruction=*/false));
       thunks.push_back(std::move(thunk));
       return std::unique_ptr<Thunk>(
           new SequentialThunk(GetThunkInfo(op), std::move(thunks)));
@@ -3224,9 +3232,15 @@ StatusOr<std::unique_ptr<Thunk>> IrEmitterUnnested::BuildKernelThunkImpl(
                                 std::string(kernel->getName()),
                                 ir_emitter_context_->llvm_module());
 
-  return {absl::make_unique<KernelThunk>(thunk_info, non_constant_buffers,
-                                         std::string(kernel->getName()),
-                                         launch_dimensions)};
+  if (IsBefThunkEnabled()) {
+    return CreateBefKernelThunk(thunk_info, non_constant_buffers,
+                                std::string(kernel->getName()),
+                                launch_dimensions);
+  } else {
+    return {absl::make_unique<KernelThunk>(thunk_info, non_constant_buffers,
+                                           std::string(kernel->getName()),
+                                           launch_dimensions)};
+  }
 }
 
 StatusOr<std::unique_ptr<Thunk>> IrEmitterUnnested::BuildKernelThunk(
@@ -3838,7 +3852,14 @@ ReductionCodegenState IrEmitterUnnested::GenerateReductionCodegenState(
 
 void IrEmitterUnnested::EmitFullWarpShuffleDownLoopForReduce(
     const HloComputation* reducer,
-    absl::Span<llvm::Value* const> partial_result_addresses) {
+    absl::Span<llvm::Value* const> partial_result_addresses,
+    int threads_per_block) {
+  // This only works when the block size is a multiple of 32 threads.
+
+  // We check this here as a mistake in the number of threads per
+  // block is very hard to detect.
+  CHECK_EQ(threads_per_block % 32, 0);
+
   for (int distance = 16; distance >= 1; distance /= 2) {
     absl::InlinedVector<llvm::Value*, 2> reduction_params;
 
@@ -4060,7 +4081,8 @@ void IrEmitterUnnested::EmitReductionOutputForRowReduction(
                              {constant(partial_result_idx)}, "current_output"));
   }
 
-  EmitFullWarpShuffleDownLoopForReduce(reducer, current_outputs);
+  EmitFullWarpShuffleDownLoopForReduce(reducer, current_outputs,
+                                       mapping_scheme.GetThreadsPerBlock());
 
   KernelSupportLibrary ksl(&b_);
   llvm::Value* warp_id =
@@ -4107,7 +4129,8 @@ void IrEmitterUnnested::EmitReductionOutputForRowReduction(
       selected_values.push_back(selected_value);
     }
 
-    EmitFullWarpShuffleDownLoopForReduce(reducer, selected_values);
+    EmitFullWarpShuffleDownLoopForReduce(reducer, selected_values,
+                                         mapping_scheme.GetThreadsPerBlock());
 
     ksl.If("reduction_write_output", is_zero(thread_id_info.thread_id_x), [&] {
       if (reduction_codegen_state.IsRaceFree()) {
@@ -4191,7 +4214,8 @@ void IrEmitterUnnested::EmitReductionOutputForColumnReduction(
     shmem_transposed_addrs.push_back(shmem_transposed_addr);
   }
 
-  EmitFullWarpShuffleDownLoopForReduce(reducer, shmem_transposed_addrs);
+  EmitFullWarpShuffleDownLoopForReduce(reducer, shmem_transposed_addrs,
+                                       mapping_scheme.GetThreadsPerBlock());
 
   // Some warps in the block are completely outside of the bound of the
   // tensor, so they should not write any output at all.

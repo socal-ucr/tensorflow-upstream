@@ -464,20 +464,18 @@ static Value BroadcastToShapeOf(Location loc, Value input, Value broadcast_to,
 Value BatchDot(Location loc, Value lhs, bool transpose_lhs, Value rhs,
                bool transpose_rhs, int64_t num_batch_dims,
                ArrayAttr precision_config, OpBuilder *builder) {
-  auto batch_dimensions = GetI64ElementsAttr(
-      llvm::to_vector<4>(llvm::seq<int64_t>(0, num_batch_dims)), builder);
-  auto lhs_contracting_dimensions = GetI64ElementsAttr(
-      llvm::makeArrayRef({transpose_lhs ? num_batch_dims : num_batch_dims + 1}),
-      builder);
-  auto rhs_contracting_dimensions = GetI64ElementsAttr(
-      llvm::makeArrayRef({transpose_rhs ? num_batch_dims + 1 : num_batch_dims}),
-      builder);
-  auto dimension_numbers = DotDimensionNumbers::get(
+  auto batch_dimensions =
+      llvm::to_vector<4>(llvm::seq<int64_t>(0, num_batch_dims));
+  auto lhs_contracting_dimensions = llvm::to_vector<1>(llvm::makeArrayRef(
+      {transpose_lhs ? num_batch_dims : num_batch_dims + 1}));
+  auto rhs_contracting_dimensions = llvm::to_vector<1>(llvm::makeArrayRef(
+      {transpose_rhs ? num_batch_dims + 1 : num_batch_dims}));
+  auto dimension_numbers = DotDimensionNumbersAttr::get(
+      builder->getContext(),
       /*lhs_batching_dimensions=*/batch_dimensions,
       /*rhs_batching_dimensions=*/batch_dimensions,
       /*lhs_contracting_dimensions=*/lhs_contracting_dimensions,
-      /*rhs_contracting_dimensions=*/rhs_contracting_dimensions,
-      builder->getContext());
+      /*rhs_contracting_dimensions=*/rhs_contracting_dimensions);
   auto lhs_shape = lhs.getType().cast<RankedTensorType>().getShape();
   auto rhs_shape = rhs.getType().cast<RankedTensorType>().getShape();
   auto shape = llvm::to_vector<4>(lhs_shape);
@@ -1026,7 +1024,7 @@ bool HasValidDotDims(StringAttr attr) {
   return dims.ParseFromString(attr.getValue().str());
 }
 
-DotDimensionNumbers GetDotDimNumsAttr(StringAttr attr, Builder *builder) {
+DotDimensionNumbersAttr GetDotDimNumsAttr(StringAttr attr, Builder *builder) {
   ::xla::DotDimensionNumbers dims;
   if (!dims.ParseFromString(attr.getValue().str())) return {};
   return ::xla::ConvertDotDimensionNumbers(dims, builder);
@@ -3402,18 +3400,17 @@ class ConvertBatchMatMulV2Op : public OpRewritePattern<TF::BatchMatMulV2Op> {
     rhs_type = rhs.getType().cast<RankedTensorType>();
     assert(lhs_type.getRank() == rhs_type.getRank());
     int64_t rank = lhs_type.getRank();
-    auto batch_dimensions = GetI64ElementsAttr(
-        llvm::to_vector<4>(llvm::seq<int64_t>(0, rank - 2)), &rewriter);
-    auto lhs_contracting_dimensions = GetI64ElementsAttr(
-        llvm::makeArrayRef({op.adj_x() ? rank - 2 : rank - 1}), &rewriter);
-    auto rhs_contracting_dimensions = GetI64ElementsAttr(
-        llvm::makeArrayRef({op.adj_y() ? rank - 1 : rank - 2}), &rewriter);
-    auto dimension_numbers = DotDimensionNumbers::get(
+    auto batch_dimensions = llvm::to_vector<4>(llvm::seq<int64_t>(0, rank - 2));
+    auto lhs_contracting_dimensions = llvm::to_vector<4>(
+        llvm::makeArrayRef({op.adj_x() ? rank - 2 : rank - 1}));
+    auto rhs_contracting_dimensions = llvm::to_vector<4>(
+        llvm::makeArrayRef({op.adj_y() ? rank - 1 : rank - 2}));
+    auto dimension_numbers = DotDimensionNumbersAttr::get(
+        rewriter.getContext(),
         /*lhs_batching_dimensions=*/batch_dimensions,
         /*rhs_batching_dimensions=*/batch_dimensions,
         /*lhs_contracting_dimensions=*/lhs_contracting_dimensions,
-        /*rhs_contracting_dimensions=*/rhs_contracting_dimensions,
-        rewriter.getContext());
+        /*rhs_contracting_dimensions=*/rhs_contracting_dimensions);
     // TODO(silvasean): Emit shape checks for contracting dimensions.
     // (The batch dimensions are checked by the broadcasting logic)
     rewriter.replaceOpWithNewOp<DotGeneralOp>(op, op.getType(), lhs, rhs,
@@ -6308,6 +6305,72 @@ class ConvertXlaAllReduceOp : public OpRewritePattern<TF::XlaAllReduceOp> {
   }
 };
 
+// Converts a TF XlaReduceScatter op to ReduceScatter HLO.
+class ConvertXlaReduceScatterOp
+    : public OpRewritePattern<TF::XlaReduceScatterOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(TF::XlaReduceScatterOp op,
+                                PatternRewriter &rewriter) const override {
+    DenseIntElementsAttr group_assignment;
+    if (!matchPattern(op.group_assignment(), m_Constant(&group_assignment)))
+      return failure();
+    auto replica_groups =
+        hlo::ConvertElementsAttr(group_assignment, rewriter.getIntegerType(64))
+            .cast<DenseIntElementsAttr>();
+    if (replica_groups.getType().getRank() != 2) return failure();
+
+    APInt scatter_dimension;
+    if (!matchPattern(op.scatter_dimension(),
+                      m_ConstantInt(&scatter_dimension)))
+      return failure();
+
+    Location loc = op.getLoc();
+    Type element_type = getElementTypeOrSelf(op.input().getType());
+
+    auto reduce_scatter = rewriter.create<ReduceScatterOp>(
+        loc, op.getType(), op.input(),
+        rewriter.getIntegerAttr(rewriter.getIntegerType(64),
+                                scatter_dimension.getSExtValue()),
+        replica_groups, ChannelHandle());
+    StringRef reduce_op = op.reduce_op();
+    if (reduce_op == "Add") {
+      BuildReduceBody<AddOp>(element_type, &reduce_scatter.computation(),
+                             &rewriter);
+    } else if (reduce_op == "Mul") {
+      BuildReduceBody<MulOp>(element_type, &reduce_scatter.computation(),
+                             &rewriter);
+    } else if (reduce_op == "Min") {
+      BuildReduceBody<MinOp>(element_type, &reduce_scatter.computation(),
+                             &rewriter);
+    } else if (reduce_op == "Max") {
+      BuildReduceBody<MaxOp>(element_type, &reduce_scatter.computation(),
+                             &rewriter);
+    } else {
+      // For mean, add replicas in the same group. Then divide the sum by the
+      // number of replicas in each group below.
+      assert(reduce_op == "Mean");
+      BuildReduceBody<AddOp>(element_type, &reduce_scatter.computation(),
+                             &rewriter);
+    }
+    Value result = reduce_scatter.getResult();
+
+    // For mean, divide the merge result by group size.
+    if (reduce_op == "Mean") {
+      int64_t replica_group_size = replica_groups.getType().getDimSize(1);
+      if (replica_group_size == 0) return failure();
+      auto divisor = GetScalarConstOfType(element_type, loc, replica_group_size,
+                                          &rewriter);
+      auto broadcast_dims = GetI64ElementsAttr({}, &rewriter);
+      result = rewriter.create<chlo::BroadcastDivOp>(
+          loc, result, divisor.getResult(), broadcast_dims);
+    }
+
+    rewriter.replaceOp(op, {result});
+    return success();
+  }
+};
+
 // Converts ClipByValue to XLA's clamp operation. Includes the broadcasting
 // semantics for static and dynamic cases.
 class ConvertClipByValueOp : public OpRewritePattern<TF::ClipByValueOp> {
@@ -7153,6 +7216,7 @@ void PopulateLegalizeTfPatterns(MLIRContext *context,
     ConvertXlaShardingOp,
     ConvertXlaDynamicUpdateSliceOp,
     ConvertXlaAllReduceOp,
+    ConvertXlaReduceScatterOp,
     ConvertRollOp,
     ConvertLeakyReluOp,
     ConvertLeakyReluGradOp,

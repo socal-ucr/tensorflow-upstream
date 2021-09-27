@@ -250,18 +250,18 @@ void ConstOp::build(OpBuilder& builder, OperationState& result,
 
 static LogicalResult Verify(DotGeneralOp op) {
   auto dot_dimension_numbers = op.dot_dimension_numbers();
-  int64_t lhs_batching_dimensions_size = llvm::size(
-      dot_dimension_numbers.lhs_batching_dimensions().getValues<int64_t>());
-  int64_t rhs_batching_dimensions_size = llvm::size(
-      dot_dimension_numbers.rhs_batching_dimensions().getValues<int64_t>());
+  int64_t lhs_batching_dimensions_size =
+      dot_dimension_numbers.getLhsBatchingDimensions().size();
+  int64_t rhs_batching_dimensions_size =
+      dot_dimension_numbers.getRhsBatchingDimensions().size();
   if (lhs_batching_dimensions_size != rhs_batching_dimensions_size) {
     return op.emitError()
            << "lhs and rhs should have the same number of batching dimensions";
   }
-  int64_t lhs_contracting_dimensions_size = llvm::size(
-      dot_dimension_numbers.lhs_contracting_dimensions().getValues<int64_t>());
-  int64_t rhs_contracting_dimensions_size = llvm::size(
-      dot_dimension_numbers.rhs_contracting_dimensions().getValues<int64_t>());
+  int64_t lhs_contracting_dimensions_size =
+      dot_dimension_numbers.getLhsContractingDimensions().size();
+  int64_t rhs_contracting_dimensions_size =
+      dot_dimension_numbers.getRhsContractingDimensions().size();
   if (lhs_contracting_dimensions_size != rhs_contracting_dimensions_size) {
     return op.emitError() << "lhs and rhs should have the same number of "
                              "contracting dimensions";
@@ -3702,9 +3702,32 @@ static LogicalResult SortDropEmptyUseArgs(SortOp op,
   return success();
 }
 
+/// Set the sorting dimension to the last dimension if it's not set and the rank
+/// is known.
+static LogicalResult SortOpInferDefaultDimension(SortOp op,
+                                                 PatternRewriter& rewriter) {
+  auto ty = op.getResultTypes()[0].dyn_cast<ShapedType>();
+  if (!ty) {
+    return failure();
+  }
+  if (op.dimension() != -1) {
+    return failure();
+  }
+
+  IntegerAttr dim = rewriter.getI64IntegerAttr(ty.getRank() - 1);
+  auto new_op = rewriter.create<SortOp>(op.getLoc(), op.getResultTypes(),
+                                        op.operands(), dim, op.is_stableAttr());
+  Region& region = new_op.comparator();
+  rewriter.inlineRegionBefore(op.comparator(), region, region.end());
+  rewriter.replaceOp(op, new_op.getResults());
+
+  return success();
+}
+
 void SortOp::getCanonicalizationPatterns(OwningRewritePatternList& results,
                                          MLIRContext* /*context*/) {
   results.insert(SortDropEmptyUseArgs);
+  results.insert(SortOpInferDefaultDimension);
 }
 
 //===----------------------------------------------------------------------===//
@@ -4300,87 +4323,111 @@ void MhloDialect::printAttribute(Attribute attr, DialectAsmPrinter& os) const {
   assert(succeeded(result));
 }
 
+/// Helpers for attributes parsing.
+
+static ParseResult parseDims(DialectAsmParser& parser,
+                             SmallVector<int64_t>& dims) {
+  dims.clear();
+  if (parser.parseLSquare()) return failure();
+  while (failed(parser.parseOptionalRSquare())) {
+    dims.emplace_back();
+    if (parser.parseInteger(dims.back())) return failure();
+    parser.parseOptionalComma();
+  }
+  return success();
+}
+
+/// Parse a custom attribute that resembles a struct of the form
+/// <
+///   foo = something_parsed_by_custom_parser,
+///   bar = something_parsed_by_different_custom_parser
+/// >
+static ParseResult parseStruct(
+    DialectAsmParser& parser, ArrayRef<StringRef> keywords,
+    ArrayRef<llvm::function_ref<ParseResult()>> parseFuncs) {
+  assert(keywords.size() == parseFuncs.size());
+  SmallVector<bool> seen(keywords.size(), false);
+  while (failed(parser.parseOptionalGreater())) {
+    bool foundOne = false;
+    for (auto it : llvm::enumerate(keywords)) {
+      size_t index = it.index();
+      StringRef keyword = it.value();
+      if (succeeded(parser.parseOptionalKeyword(keyword))) {
+        if (seen[index]) {
+          return parser.emitError(parser.getCurrentLocation())
+                 << "duplicated `" << keyword << "` entry";
+        }
+        if (failed(parser.parseEqual()) || failed(parseFuncs[index]()))
+          return failure();
+        if (failed(parser.parseOptionalComma())) return parser.parseGreater();
+        seen[index] = true;
+        foundOne = true;
+      }
+    }
+    if (!foundOne) {
+      auto parseError = parser.emitError(parser.getCurrentLocation())
+                        << "expected one of: ";
+      llvm::interleaveComma(keywords, parseError, [&](StringRef kw) {
+        parseError << '`' << kw << '`';
+      });
+      return parseError;
+    }
+  }
+  return success();
+}
+
 // Custom printer and parser for ScatterDimensionNumbersAttr.
 void ScatterDimensionNumbersAttr::print(
     ::mlir::DialectAsmPrinter& printer) const {
   printer << "scatter<";
   auto update_window_dims = getUpdateWindowDims();
+  StringRef separator = "";
   if (!update_window_dims.empty()) {
     printer << "update_window_dims = [";
     llvm::interleaveComma(update_window_dims, printer);
-    printer << "], ";
+    printer << "]";
+    separator = ", ";
   }
   auto inserted_window_dims = getInsertedWindowDims();
   if (!inserted_window_dims.empty()) {
-    printer << "inserted_window_dims = [";
+    printer << separator << "inserted_window_dims = [";
     llvm::interleaveComma(inserted_window_dims, printer);
-    printer << "], ";
+    printer << "]";
+    separator = ", ";
   }
   auto scatter_dims_to_operand_dims = getScatterDimsToOperandDims();
   if (!scatter_dims_to_operand_dims.empty()) {
-    printer << "scatter_dims_to_operand_dims = [";
+    printer << separator << "scatter_dims_to_operand_dims = [";
     llvm::interleaveComma(scatter_dims_to_operand_dims, printer);
-    printer << "], ";
+    printer << "]";
+    separator = ", ";
   }
   if (getIndexVectorDim())
-    printer << "index_vector_dim = " << getIndexVectorDim();
+    printer << separator << "index_vector_dim = " << getIndexVectorDim();
   printer << ">";
 }
 Attribute ScatterDimensionNumbersAttr::parse(MLIRContext* context,
                                              DialectAsmParser& parser,
                                              Type type) {
-  if (parser.parseLess()) return {};
-
-  auto parse_dims = [&](SmallVector<int64_t>& dims) -> ParseResult {
-    dims.clear();
-    if (parser.parseLSquare()) return failure();
-    while (failed(parser.parseOptionalRSquare())) {
-      dims.emplace_back();
-      if (parser.parseInteger(dims.back())) return failure();
-      parser.parseOptionalComma();
-    }
-    return success();
-  };
-  auto parse_keyword = [&](StringRef keyword, bool& seen,
-                           auto parse_values) -> ParseResult {
-    auto loc = parser.getCurrentLocation();
-    if (succeeded(parser.parseOptionalKeyword(keyword))) {
-      if (seen) {
-        parser.emitError(loc) << "duplicated `" << keyword << "` entry";
-        return failure();
-      }
-      seen = true;
-      if (parser.parseEqual() || parse_values()) return failure();
-      parser.parseOptionalComma();
-    }
-    return success();
-  };
-
-  bool seen_update_window_dims = false;
+  if (failed(parser.parseLess())) return {};
   SmallVector<int64_t> update_window_dims;
-  bool seen_inserted_window_dims = false;
   SmallVector<int64_t> inserted_window_dims;
-  bool seen_scatter_dims_to_operand_dims = false;
   SmallVector<int64_t> scatter_dims_to_operand_dims;
-  bool seen_index_vector_dim = false;
   int64_t index_vector_dim = 0;
-  // Parse the key-value pair in any order, duplicate are errors.
-  while (failed(parser.parseOptionalGreater())) {
-    if (failed(parse_keyword("update_window_dims", seen_update_window_dims,
-                             [&] { return parse_dims(update_window_dims); })))
-      return {};
-    if (failed(parse_keyword("inserted_window_dims", seen_inserted_window_dims,
-                             [&] { return parse_dims(inserted_window_dims); })))
-      return {};
-    if (failed(parse_keyword(
-            "scatter_dims_to_operand_dims", seen_scatter_dims_to_operand_dims,
-            [&]() { return parse_dims(scatter_dims_to_operand_dims); })))
-      return {};
-    if (failed(parse_keyword("index_vector_dim", seen_index_vector_dim, [&]() {
-          return parser.parseInteger(index_vector_dim);
-        })))
-      return {};
+
+  if (failed(parseStruct(
+          parser,
+          {"update_window_dims", "inserted_window_dims",
+           "scatter_dims_to_operand_dims", "index_vector_dim"},
+          {[&]() { return parseDims(parser, update_window_dims); },
+           [&]() { return parseDims(parser, inserted_window_dims); },
+           [&]() { return parseDims(parser, scatter_dims_to_operand_dims); },
+           [&]() { return parser.parseInteger(index_vector_dim); }}))) {
+    parser.emitError(parser.getCurrentLocation())
+        << "failed parsing scatter dimension numbers attribute";
+    return {};
   }
+
   return ScatterDimensionNumbersAttr::get(
       context, update_window_dims, inserted_window_dims,
       scatter_dims_to_operand_dims, index_vector_dim);
@@ -4390,86 +4437,119 @@ Attribute ScatterDimensionNumbersAttr::parse(MLIRContext* context,
 void GatherDimensionNumbersAttr::print(
     ::mlir::DialectAsmPrinter& printer) const {
   printer << "gather<";
+  StringRef separator = "";
   auto offset_dims = getOffsetDims();
   if (!offset_dims.empty()) {
     printer << "offset_dims = [";
     llvm::interleaveComma(offset_dims, printer);
-    printer << "], ";
+    printer << "]";
+    separator = ", ";
   }
   auto collapsed_slice_dims = getCollapsedSliceDims();
   if (!collapsed_slice_dims.empty()) {
-    printer << "collapsed_slice_dims = [";
+    printer << separator << "collapsed_slice_dims = [";
     llvm::interleaveComma(collapsed_slice_dims, printer);
-    printer << "], ";
+    printer << "]";
+    separator = ", ";
   }
   auto start_index_map = getStartIndexMap();
   if (!start_index_map.empty()) {
-    printer << "start_index_map = [";
+    printer << separator << "start_index_map = [";
     llvm::interleaveComma(start_index_map, printer);
-    printer << "], ";
+    printer << "]";
+    separator = ", ";
   }
   if (getIndexVectorDim())
-    printer << "index_vector_dim = " << getIndexVectorDim();
+    printer << separator << "index_vector_dim = " << getIndexVectorDim();
   printer << ">";
 }
 
 Attribute GatherDimensionNumbersAttr::parse(MLIRContext* context,
                                             DialectAsmParser& parser,
                                             Type type) {
-  if (parser.parseLess()) return {};
+  if (failed(parser.parseLess())) return {};
 
-  auto parse_dims = [&](SmallVector<int64_t>& dims) -> ParseResult {
-    dims.clear();
-    if (parser.parseLSquare()) return failure();
-    while (failed(parser.parseOptionalRSquare())) {
-      dims.emplace_back();
-      if (parser.parseInteger(dims.back())) return failure();
-      parser.parseOptionalComma();
-    }
-    return success();
-  };
-  auto parse_keyword = [&](StringRef keyword, bool& seen,
-                           auto parse_values) -> ParseResult {
-    auto loc = parser.getCurrentLocation();
-    if (succeeded(parser.parseOptionalKeyword(keyword))) {
-      if (seen) {
-        parser.emitError(loc) << "duplicated `" << keyword << "` entry";
-        return failure();
-      }
-      seen = true;
-      if (parser.parseEqual() || parse_values()) return failure();
-      parser.parseOptionalComma();
-    }
-    return success();
-  };
-
-  bool seen_offset_dims = false;
   SmallVector<int64_t> offset_dims;
-  bool seen_collapsed_slice_dims = false;
   SmallVector<int64_t> collapsed_slice_dims;
-  bool seen_start_index_map = false;
   SmallVector<int64_t> start_index_map;
-  bool seen_index_vector_dim = false;
   int64_t index_vector_dim = 0;
-  // Parse the key-value pair in any order, duplicate are errors.
-  while (failed(parser.parseOptionalGreater())) {
-    if (failed(parse_keyword("offset_dims", seen_offset_dims,
-                             [&] { return parse_dims(offset_dims); })))
-      return {};
-    if (failed(parse_keyword("collapsed_slice_dims", seen_collapsed_slice_dims,
-                             [&] { return parse_dims(collapsed_slice_dims); })))
-      return {};
-    if (failed(parse_keyword("start_index_map", seen_start_index_map,
-                             [&]() { return parse_dims(start_index_map); })))
-      return {};
-    if (failed(parse_keyword("index_vector_dim", seen_index_vector_dim, [&]() {
-          return parser.parseInteger(index_vector_dim);
-        })))
-      return {};
+
+  if (failed(parseStruct(
+          parser,
+          {"offset_dims", "collapsed_slice_dims", "start_index_map",
+           "index_vector_dim"},
+          {[&]() { return parseDims(parser, offset_dims); },
+           [&]() { return parseDims(parser, collapsed_slice_dims); },
+           [&]() { return parseDims(parser, start_index_map); },
+           [&]() { return parser.parseInteger(index_vector_dim); }}))) {
+    parser.emitError(parser.getCurrentLocation())
+        << "failed parsing gather dimension numbers attribute";
+    return {};
   }
+
   return GatherDimensionNumbersAttr::get(context, offset_dims,
                                          collapsed_slice_dims, start_index_map,
                                          index_vector_dim);
+}
+
+// Custom printer and parser for DotDimensionNumbersAttr.
+void DotDimensionNumbersAttr::print(::mlir::DialectAsmPrinter& printer) const {
+  printer << "dot<";
+  StringRef separator = "";
+  auto lhs_batching_dimensions = getLhsBatchingDimensions();
+  if (!lhs_batching_dimensions.empty()) {
+    printer << "lhs_batching_dimensions = [";
+    llvm::interleaveComma(lhs_batching_dimensions, printer);
+    printer << "]";
+    separator = ", ";
+  }
+  auto rhs_batching_dimensions = getRhsBatchingDimensions();
+  if (!rhs_batching_dimensions.empty()) {
+    printer << separator << "rhs_batching_dimensions = [";
+    llvm::interleaveComma(rhs_batching_dimensions, printer);
+    printer << "]";
+    separator = ", ";
+  }
+  auto lhs_contracting_dimensions = getLhsContractingDimensions();
+  if (!lhs_contracting_dimensions.empty()) {
+    printer << separator << "lhs_contracting_dimensions = [";
+    llvm::interleaveComma(lhs_contracting_dimensions, printer);
+    printer << "]";
+    separator = ", ";
+  }
+  auto rhs_contracting_dimensions = getRhsContractingDimensions();
+  if (!rhs_contracting_dimensions.empty()) {
+    printer << separator << "rhs_contracting_dimensions = [";
+    llvm::interleaveComma(rhs_contracting_dimensions, printer);
+    printer << "]";
+  }
+  printer << ">";
+}
+
+Attribute DotDimensionNumbersAttr::parse(MLIRContext* context,
+                                         DialectAsmParser& parser, Type type) {
+  if (failed(parser.parseLess())) return {};
+
+  SmallVector<int64_t> lhs_batching_dimensions;
+  SmallVector<int64_t> rhs_batching_dimensions;
+  SmallVector<int64_t> lhs_contracting_dimensions;
+  SmallVector<int64_t> rhs_contracting_dimensions;
+
+  if (failed(parseStruct(
+          parser,
+          {"lhs_batching_dimensions", "rhs_batching_dimensions",
+           "lhs_contracting_dimensions", "rhs_contracting_dimensions"},
+          {[&]() { return parseDims(parser, lhs_batching_dimensions); },
+           [&]() { return parseDims(parser, rhs_batching_dimensions); },
+           [&]() { return parseDims(parser, lhs_contracting_dimensions); },
+           [&]() { return parseDims(parser, rhs_contracting_dimensions); }}))) {
+    parser.emitError(parser.getCurrentLocation())
+        << "failed parsing dot dimension numbers attribute";
+    return {};
+  }
+  return DotDimensionNumbersAttr::get(
+      context, lhs_batching_dimensions, rhs_batching_dimensions,
+      lhs_contracting_dimensions, rhs_contracting_dimensions);
 }
 
 //===----------------------------------------------------------------------===//

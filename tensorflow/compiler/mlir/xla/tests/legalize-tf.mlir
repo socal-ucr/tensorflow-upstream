@@ -611,7 +611,7 @@ func @matrix_diag_part(%arg0: tensor<7x140x128xi32>) -> tensor<7x22x128xi32> {
   // CHECK-DAG: %[[V40:.*]] = mhlo.and %[[V36]], %[[V39]] : tensor<1x22x128xi1>
   // CHECK-DAG: %[[V41:.*]] = "mhlo.reshape"(%[[V40]]) : (tensor<1x22x128xi1>) -> tensor<22x128xi1>
   // CHECK-DAG: %[[V42:.*]] = "mhlo.concatenate"(%[[V33]], %[[V32]]) {dimension = 0 : i64} : (tensor<1x22x128xi32>, tensor<1x22x128xi32>) -> tensor<2x22x128xi32>
-  // CHECK-DAG: %[[V43:.*]] = "mhlo.gather"(%[[ARG]], %[[V42]]) {dimension_numbers = #mhlo.gather<offset_dims = [0], collapsed_slice_dims = [1, 2], start_index_map = [1, 2], >, indices_are_sorted = false, slice_sizes = dense<[7, 1, 1]> : tensor<3xi64>} : (tensor<7x140x128xi32>, tensor<2x22x128xi32>) -> tensor<7x22x128xi32>
+  // CHECK-DAG: %[[V43:.*]] = "mhlo.gather"(%[[ARG]], %[[V42]]) {dimension_numbers = #mhlo.gather<offset_dims = [0], collapsed_slice_dims = [1, 2], start_index_map = [1, 2]>, indices_are_sorted = false, slice_sizes = dense<[7, 1, 1]> : tensor<3xi64>} : (tensor<7x140x128xi32>, tensor<2x22x128xi32>) -> tensor<7x22x128xi32>
   // CHECK-DAG: %[[V44:.*]] = "mhlo.broadcast"(%[[V41]]) {broadcast_sizes = dense<7> : tensor<1xi64>} : (tensor<22x128xi1>) -> tensor<7x22x128xi1>
   // CHECK-DAG: %[[V45:.*]] = "mhlo.broadcast"(%[[V0]]) {broadcast_sizes = dense<[7, 22, 128]> : tensor<3xi64>} : (tensor<i32>) -> tensor<7x22x128xi32>
   // CHECK: %[[V46:.*]] = "mhlo.select"(%[[V44]], %[[V43]], %[[V45]]) : (tensor<7x22x128xi1>, tensor<7x22x128xi32>, tensor<7x22x128xi32>) -> tensor<7x22x128xi32>
@@ -5419,12 +5419,12 @@ func @angle_c64(%arg0: tensor<complex<f32>>) -> tensor<f32> {
 // CHECK-SAME:    %[[LHS:.*]]: tensor<64x32xi8>, %[[RHS:.*]]: tensor<32x16xi8>) -> tensor<64x16xi32>
 func @xladot_matmul(%lhs : tensor<64x32xi8>, %rhs : tensor<32x16xi8>) -> tensor<64x16xi32> {
   // CHECK: "mhlo.dot_general"(%[[LHS]], %[[RHS]]) {
-  // CHECK-SAME:  dot_dimension_numbers = {
-  // CHECK-SAME:      lhs_batching_dimensions = dense<> : tensor<0xi64>,
-  // CHECK-SAME:      lhs_contracting_dimensions = dense<1> : tensor<1xi64>,
-  // CHECK-SAME:      rhs_batching_dimensions = dense<> : tensor<0xi64>,
-  // CHECK-SAME:      rhs_contracting_dimensions = dense<0> : tensor<1xi64>
-  // CHECK-SAME:  }, precision_config = []} : (tensor<64x32xi8>, tensor<32x16xi8>) -> tensor<64x16xi32>
+  // CHECK-SAME:  dot_dimension_numbers = #mhlo.dot<
+  // CHECK-NOT:     lhs_batching_dimensions =
+  // CHECK-NOT:     rhs_batching_dimensions =
+  // CHECK-SAME:    lhs_contracting_dimensions = [1]
+  // CHECK-SAME:    rhs_contracting_dimensions = [0]
+  // CHECK-SAME:  precision_config = []
   %res = "tf.XlaDot"(%lhs, %rhs) {dimension_numbers = "\0A\01\01\12\01\00", precision_config = ""} : (tensor<64x32xi8>, tensor<32x16xi8>) -> tensor<64x16xi32>
   return %res : tensor<64x16xi32>
 }
@@ -5437,12 +5437,12 @@ func @xladot_matmul(%lhs : tensor<64x32xi8>, %rhs : tensor<32x16xi8>) -> tensor<
 // CHECK-SAME:    %[[LHS:.*]]: tensor<64x32xi8>, %[[RHS:.*]]: tensor<32x16xi8>) -> tensor<64x16xi32>
 func @xladotv2_matmul(%lhs : tensor<64x32xi8>, %rhs : tensor<32x16xi8>) -> tensor<64x16xi32> {
   // CHECK: "mhlo.dot_general"(%[[LHS]], %[[RHS]]) {
-  // CHECK-SAME:  dot_dimension_numbers = {
-  // CHECK-SAME:      lhs_batching_dimensions = dense<> : tensor<0xi64>,
-  // CHECK-SAME:      lhs_contracting_dimensions = dense<1> : tensor<1xi64>,
-  // CHECK-SAME:      rhs_batching_dimensions = dense<> : tensor<0xi64>,
-  // CHECK-SAME:      rhs_contracting_dimensions = dense<0> : tensor<1xi64>
-  // CHECK-SAME:  }, precision_config = []} : (tensor<64x32xi8>, tensor<32x16xi8>) -> tensor<64x16xi32>
+  // CHECK-SAME:  dot_dimension_numbers = #mhlo.dot<
+  // CHECK-NOT:     lhs_batching_dimensions =
+  // CHECK-NOT:     rhs_batching_dimensions =
+  // CHECK-SAME:    lhs_contracting_dimensions = [1]
+  // CHECK-SAME:    rhs_contracting_dimensions = [0]
+  // CHECK-SAME:  precision_config = []
   %res = "tf.XlaDotV2"(%lhs, %rhs) {dimension_numbers = "\0A\01\01\12\01\00", precision_config = ""} : (tensor<64x32xi8>, tensor<32x16xi8>) -> tensor<64x16xi32>
   return %res : tensor<64x16xi32>
 }
@@ -5469,4 +5469,19 @@ func @nextafter(%arg0: tensor<2xf32>, %arg1 : tensor<2xf32>) -> tensor<2xf32> {
   // CHECK-NEXT:  return %0 : tensor<2xf32>
   %0 = "tf.NextAfter"(%arg0, %arg1) : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
   return %0: tensor<2xf32>
+}
+
+//===----------------------------------------------------------------------===//
+// tf.XlaReduceScatter legalization
+//===----------------------------------------------------------------------===//
+// CHECK-LABEL: func @xla_reduce_scatter
+func @xla_reduce_scatter(%arg0: tensor<128x128xf32>) -> tensor<64x128xf32> {
+    %cst = "tf.Const"() {value = dense<0> : tensor<i32>} : () -> tensor<i32>
+    %cst_0 = "tf.Const"() {value = dense<[[0, 4], [1, 5], [2, 6], [3, 7]]> : tensor<4x2xi32>} : () -> tensor<4x2xi32>
+    // CHECK:          "mhlo.reduce_scatter"(%arg0)
+    // CHECK{LITERAL}: replica_groups = dense<[[0, 4], [1, 5], [2, 6], [3, 7]]>
+    // CHECK-SAME:     scatter_dimension = 0
+    //
+    %1 = "tf.XlaReduceScatter"(%arg0, %cst_0, %cst) {reduce_op = "Add"} : (tensor<128x128xf32>, tensor<4x2xi32>, tensor<i32>) -> tensor<64x128xf32>
+    return %1 : tensor<64x128xf32>
 }
