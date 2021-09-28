@@ -113,14 +113,14 @@ class CUDABlas : public blas::BlasSupport {
 
   // Helper function for implementing DoBlasGemmWithProfiling.
   template <typename T, typename ParamType>
-  bool DoBlasGemmWithProfilingImpl(Stream *stream, blas::Transpose transa,
+  bool DoBlasGemmWithProfilingImpl(Stream* stream, blas::Transpose transa,
                                    blas::Transpose transb, uint64_t m,
-                                   uint64_t n, uint64 k, const ParamType &alpha,
-                                   const DeviceMemory<T> &a, int lda,
-                                   const DeviceMemory<T> &b, int ldb,
-                                   const ParamType &beta, DeviceMemory<T> *c,
-                                   int ldc,
-                                   blas::ProfileResult *output_profile_result);
+                                   uint64_t n, uint64 k, const ParamType& alpha,
+                                   const DeviceMemory<T>& a, int lda,
+                                   const DeviceMemory<T>& b, int ldb,
+                                   const ParamType& beta, DeviceMemory<T>* c,
+                                   int ldc, blas::CallContext context,
+                                   blas::ProfileResult* output_profile_result);
 
   // Helper function for implementing DoBlasGemvWithProfiling.
   template <typename T>

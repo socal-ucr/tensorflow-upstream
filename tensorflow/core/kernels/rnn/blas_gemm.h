@@ -25,6 +25,10 @@ limitations under the License.
 #include "tensorflow/core/kernels/eigen_contraction_kernel.h"
 #endif
 
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+#include "tensorflow/core/platform/stream_executor.h"
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
 namespace tensorflow {
 class OpKernelContext;
 namespace functor {
@@ -33,7 +37,8 @@ template <typename T>
 struct TensorCuBlasGemm {
   void operator()(OpKernelContext* ctx, bool transa, bool transb, uint64 m,
                   uint64 n, uint64 k, float alpha, const T* a, int lda,
-                  const T* b, int ldb, float beta, T* c, int ldc);
+                  const T* b, int ldb, float beta, T* c, int ldc,
+                  stream_executor::blas::CallContext context);
 };
 
 template <typename T>
@@ -63,7 +68,8 @@ struct TensorBlasGemm<Device, T, true /* USE_CUBLAS */> {
 
     TensorCuBlasGemm<T>()(ctx, transb, transa, n, m, k, alpha, b.data(),
                           transb ? k : n, a.data(), transa ? m : k, beta,
-                          c.data(), n);
+                          c.data(), n,
+                          stream_executor::blas::CallContext::kNone);
   }
 };
 
